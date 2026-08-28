@@ -1,12 +1,3 @@
-# =============================================================================
-# Copyright 2025. Somjit Roy and Pritam Dey. 
-# This program implements helper functions for the TAVIE-SSG algorithm as developed in:
-# Roy, S., Dey, P., Pati, D., and Mallick, B.K.
-# 'A Generalized Tangent Approximation Based Variational Inference Framework for Strongly Super-Gaussian Likelihoods'.
-#
-# Authors:
-#   Somjit Roy <sroy_123@tamu.edu> and Pritam Dey <pritam.dey@tamu.edu>
-# =============================================================================
 
 # Required imports
 import numpy as np

@@ -1,181 +1,252 @@
 # TAVIE-SSG: A Generalized Tangent Approximation based Variational Inference Framework for Strongly Super-Gaussian Likelihoods
 
-[![Python](https://img.shields.io/badge/Python-3.13.5-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![arXiv](https://img.shields.io/badge/arXiv-2504.05431-b31b1b)](https://arxiv.org/abs/2504.05431)
-[![Forks](https://img.shields.io/github/forks/Roy-SR-007/TAVIE)](https://github.com/Roy-SR-007/TAVIE/network)
-[![Repo Size](https://img.shields.io/github/repo-size/Roy-SR-007/TAVIE)](https://github.com/Roy-SR-007/TAVIE)
-[![Last Commit](https://img.shields.io/github/last-commit/Roy-SR-007/TAVIE)](https://github.com/Roy-SR-007/TAVIE/commits/main)
-[![Issues](https://img.shields.io/github/issues/Roy-SR-007/TAVIE)](https://github.com/Roy-SR-007/TAVIE/issues)
-[![Pull Requests](https://img.shields.io/github/issues-pr/Roy-SR-007/TAVIE)](https://github.com/Roy-SR-007/TAVIE/pulls)
-
-
-
 <p align="center">
-  <img src="assets/TAVIE_animated_logo.gif" alt="TAVIE_logo" width="650"/>
+  <img src="assets/TAVIE-SSG_animated_logo.gif" alt="TAVIE_logo" width="650"/>
 </p>
 
-This repository holds the source code and implementation of **TAVIE-SSG** proposed in Roy, S., Dey, P., Pati, D., & Mallick, B. K. (2025), *A Generalized Tangent Approximation based Variational Inference Framework for Strongly Super‑Gaussian Likelihoods*.
+This repository holds the source code and implementation of **TAVIE-SSG** proposed in *A Generalized Tangent Approximation based Variational Inference Framework for Strongly Super‑Gaussian Likelihoods*.
 
 ---
 
-## Developers and Maintainers
-
-**Somjit Roy**  
-Department of Statistics  
-Texas A&M University, College Station, TX, USA  
-
-📧 Email: [sroy_123@tamu.edu](mailto:sroy_123@tamu.edu)  
-🌐 Website: [https://roy-sr-007.github.io](https://roy-sr-007.github.io)
-
-**Pritam Dey**  
-Department of Statistics  
-Texas A&M University, College Station, TX, USA  
-
-📧 Email: [pritam.dey@tamu.edu](mailto:pritam.dey@tamu.edu)  
-🌐 Website: [https://pritamdey.github.io](https://pritamdey.github.io)
-
----
-
-## NEWS
-
-- This is the second official release of `TAVIE-SSG v2.0.0` on `GitHub`.
-- Explore different example cases, settings and usage of TAVIE-SSG across various strongly super-Gaussian (SSG) likelihoods with comparison against other state-of-the-art variational inference (VI) algorithms.
-- Application of TAVIE-SSG in real-word data studies has also been presented.
-- Though TAVIE-SSG can run on any `Python` IDE, we recommend using [Visual Studio Code](https://code.visualstudio.com/).
-
----
 
 ## Overview
 
-*Variational inference* (VI), a concept rooted from statistical physics, has gained recent traction as a contender to prevalent Markov chain Monte Carlo (MCMC) sampling techniques used for posterior inference. VI has transformed approximate Bayesian inference through its power of scaling compute time under big data with applications extending out to the realm of *machine learning*, specifically in *graphical models* ([Wainwright and Jordan, 2008](https://www.nowpublishers.com/article/Details/MAL-001); [Jordan et al., 1999](https://link.springer.com/article/10.1023/A:1007665907178)), *hidden Markov models* (HMMs) ([MacKay, 1997](http://www.inference.org.uk/mackay/ensemblePaper.pdf)), *latent class models* ([Blei et al., 2003](https://jmlr.csail.mit.edu/papers/v3/blei03a.html)), and *neural networks* (NNs) ([Graves, 2011](https://papers.nips.cc/paper_files/paper/2011/hash/7eb3c8be3d411e8ebfab08eba5f49632-Abstract.html)). *Tangent approximation* ([Jaakkola and Jordan, 2000](https://link.springer.com/article/10.1023/A:1008932416310)), forming a popular class of principled VI technique in intractable non-conjugate models has been used in diverse modeling frameworks like *low-rank approximations* ([Srebro and Jaakkola, 2003](https://people.csail.mit.edu/tommi/papers/SreJaa-icml03.pdf)), *sparse kernel machines* ([Shi and Yu, 2019](https://proceedings.neurips.cc/paper/2019/hash/bcc0d400288793e8bdcd7c19a8ac0c2b-Abstract.html)), and *online prediction* ([Konagayoshi and Watanabe, 2019](https://proceedings.mlr.press/v101/konagayoshi19a.html)). However, these applications have been primarily confined to *logistic regression* setting. We develop **T**angent **A**pproximation based **V**ariational **I**nferenc**E** Framework for **S**trongly **S**uper-**G**aussian Likelihoods (TAVIE-SSG).
-
+An overview of **T**angent **A**pproximation based **V**ariational **I**nferenc**E** Framework for **S**trongly **S**uper-**G**aussian Likelihoods (**TAVIE-SSG**) is as follows.
 
 <p align="center">
   <img src="assets/tangent_bounds.gif" alt="Tangent Bound Animation" width="600"/>
-  <br><em>Tangent minorizers for Student's-t likelihood, animated over 50 values of the variational parameter ξ</em>
+  <br>
+  <em>Tangent minorizers for the Student's-t likelihood, animated over 50 values of the variational parameter ξ.</em>
 </p>
 
-TAVIE-SSG works for a large class of SSG likelihoods, comprising mainly of the following types of families:
-- **Type I families**: These comprise of linear regression models with heavy-tailed error distributions. Notable families of error distributions which can be addressed by TAVIE-SSG include the *Laplace* (*Double-Exponential*) and *Student's-t*. In general, any *scaled-mixture* of *zero-mean Gaussian* distributions have the SSG form, and thus can be implemented using TAVIE-SSG.
-- **Type II families**: These comprise of count response models with *Binomial* (including Bernoulli/Logistic) and *Negative-Binomial* distributions.
-- **Bayesian quantlile regression**: As an extension of the Type-I likelihood to the *asymmetric Laplace distribution*.
+TAVIE-SSG currently supports the following model classes:
 
-Due to the large class of models which can be fitted and infered from using TAVIE-SSG, it can be applied to a broad class of real-world problems spanning applications in finance and economics, as well as in biostatistics viz., gene expression modeling, microbiome studies and neuroscience. We showcase the implementation and application of TAVIE-SSG in two real-world data studies: (i) *Bayesian quantile regression* in U.S. 2000 Census data, and (ii) *Negative-Binomial* regression to predict *gene expressions* across different spatial locations in the STARmap data.
+| Model class | Description | Examples |
+|---|---|---|
+| **Type I SSG families** | Linear regression models with heavy-tailed location-scale errors. | Laplace, Student's-t, and general scaled-mixtures of Gaussians. |
+| **Type II SSG families** | Count-response generalized linear models. | Binomial/Bernoulli logistic regression and Negative-Binomial regression. |
+| **Bayesian Quantile Regression** | Extension of Type I SSG modeling using the asymmetric Laplace likelihood. | Bayesian quantile regression. |
 
 ---
 
-## Installation and Dependencies
+## Dependencies
 
-To get started with TAVIE-SSG, which is built on `Python==3.13.5`, clone the current Github repository and install the required dependencies:
+The codebase was developed using:
 
-* `ipython`
-* `matplotlib`
-* `numpy`
-* `pandas`
-* `rich`
-* `scikit_learn`
-* `scipy`
-* `torch`
-* `tqdm`
-* `toolz`
-* `pymc`
-* `pytensor`
-
-```bash
-# using SSH on bash
-git clone git@github.com:Roy-SR-007/TAVIE-SSG.git
-
-# or, using HTTPS on bash
-git clone https://github.com/Roy-SR-007/TAVIE-SSG.git
-
-# moving to the TAVIE directory
-cd TAVIE
-
-# install the required dependencies
-pip install -r requirements.txt
+```text
+Python == 3.13.5
 ```
+
+The package versions below describe the tested environment. Exact version pins are recommended for reproducibility, although nearby compatible versions may also work.
+
+### Core dependencies
+
+These packages are required to run the main TAVIE-SSG implementation and examples:
+
+```text
+ipython == 8.30.0, ipykernel == 6.29.5, jupyterlab == 4.3.4 # for running Jupyter notebook
+matplotlib == 3.10.0
+numpy == 2.4.3
+pandas == 2.2.3
+rich == 13.9.4
+scikit-learn == 1.8.0
+scipy == 1.15.3
+tqdm == 4.67.1
+```
+
+### Additional dependencies for simulations, real-data studies, and competing methods
+
+These packages are required for reproducing the full set of experiments reported in the main manuscript and Supplementary Materials:
+
+```text
+arviz == 0.22.0
+jax == 0.7.0
+jaxlib == 0.7.0
+pymc == 5.25.1
+pytensor == 2.31.7
+rdata == 0.11.2
+seaborn == 0.13.2
+statsmodels == 0.14.4
+xarray == 2025.4.0
+torch == 2.7.1
+dill == 0.3.8
+```
+
+### Built-in Python modules
+
+The following modules are part of the `Python` standard library:
+
+```text
+os
+re
+math
+time
+random
+pickle
+logging
+warnings
+itertools
+pathlib
+functools
+json
+typing
+dataclasses
+```
+
+> **`Python`-version note for `dadvi` and `PyMC (NUTS)`:** The main `TAVIE` module and standalone `PyMC (NUTS)` runs can use `Python 3.13.15` with `PyMC 5.25.1` and `PyTensor 2.31.7`. However, `dadvi` relies on the older `pymc.sampling_jax` API and must be run in a separate `Python 3.9` environment. For installing and setting up `dadvi`, please follow the official instructions at [https://github.com/martiningram/dadvi](https://github.com/martiningram/dadvi).
+
 ---
 
-## Functionalities of the TAVIE class
+## Reproducibility Guide
 
-The `TAVIE` package wrapped in the 'TAVIE' folder deals with the implementation of the corresponding tangent transformation VI algorithm under various SSG probability models. It provides flexible, modular support across different likelihood families and modeling tasks.
+Before presenting the TAVIE-SSG functionalities, we list the Jupyter notebooks used to generate the results reported in the main manuscript and Supplementary Materials. Each notebook is linked to its corresponding output notebook, results folder, or data folder to facilitate reproducibility.
 
+| Notebook file | Purpose | Results notebook / folder |
+|---|---|---|
+| [`TAVIE-SSG_examples.ipynb`](TAVIE-SSG_examples.ipynb) | Implementation examples for TAVIE-SSG under different Type I and Type II SSG likelihoods. | [`TAVIE-SSG_examples.ipynb`](TAVIE-SSG_examples.ipynb) |
+| [`student-t_simulations.ipynb`](student-t_simulations.ipynb) | Simulation studies E1 and E2 (Section 4.1) for the Student's-t Type I SSG likelihood, including comparisons with competing methods. | [`results_compete`](results_compete) |
+| [`laplace_simulations.ipynb`](laplace_simulations.ipynb) | Simulation studies E1 and E2 (Section M.1) for the Laplace Type I SSG likelihood, including comparisons with competing methods. | [`results_compete`](results_compete) |
+| [`negative-binomial_simulations.ipynb`](negative-binomial_simulations.ipynb) | Simulation studies E1 and E2 (Section M.2) for the Negative-Binomial Type II SSG likelihood, including comparisons with competing methods. | [`results_compete`](results_compete) |
+| [`STARmap.ipynb`](STARmap.ipynb) | Real-data application to STARmap spatial transcriptomics gene-expression data using the Negative-Binomial TAVIE-SSG model (Section 4.3). | [`data/STArMAP`](data/STArMAP), [`results_data_study/STARmap`](results_data_study/STARmap) |
+| [`BQR_census.ipynb`](BQR_census.ipynb) | Bayesian quantile regression application on the U.S. Census 2000 dataset (Section 4.2), with comparisons against quantile regression, variational, and Monte Carlo competitors. | [`data/Census_data`](data/Census_data), [`results_data_study/census_QR`](results_data_study/census_QR) |
+| [`Section_C_gaps.ipynb`](Section_C_gaps.ipynb) & [`Section_C_grid_experiments.ipynb`](Section_C_grid_experiments.ipynb) | Supplementary Section C experiments analyzing ELBO and variational gaps in TAVIE-SSG. | [`results_gaps`](results_gaps) |
+| [`Sections_E_F_alpha_sensitivity_calibration.ipynb`](Sections_E_F_alpha_sensitivity_calibration.ipynb) | Supplementary Sections E and F experiments on likelihood-tempering sensitivity and $\alpha$ calibration. | [`results_sensitivity_calibration_alpha`](results_sensitivity_calibration_alpha) |
+| [`Section_D_time_complexity_analysis.ipynb`](Section_D_time_complexity_analysis.ipynb) | Supplementary Section D empirical time-complexity analysis of TAVIE-SSG. | [`results_time_complexity`](results_time_complexity) |
+| [`Section_J_theoretical_validation.ipynb`](Section_J_theoretical_validation.ipynb) | Supplementary Section J empirical validation of the variational risk bound. | [`results_theory`](results_theory) |
+| [`Section_M_3_simulation_alpha.ipynb`](Section_M_3_simulation_alpha.ipynb) | Supplementary Section M.3 simulation study examining the effect of varying $\alpha$. | [`results_alpha`](results_alpha) |
+| [`Section_M_4_scaling_p.ipynb`](Section_M_4_scaling_p.ipynb) | Supplementary Section M.4 scaling study with increasing dimension $p$. | [`results_scaling_p`](results_scaling_p) |
+| [`TAVIE_SSG_model_misspecification.ipynb`](TAVIE_SSG_model_misspecification.ipynb) | Predictive MSE comparison of TAVIE-SSG and PyMC NUTS under five Type-I Laplace/Student-t misspecification settings and one Type-II Poisson-to-Negative-Binomial setting. | [`results_misspecified`](results_misspecified) |
 
-| Class             | Target SSG Model               | Supported Likelihoods                               | Prior Type                  |
-|-------------------|--------------------------------|-----------------------------------------------------|-----------------------------|
-| `TAVIE_loc_scale` | Heavy-tailed location-scale family (Type I SSG) | Laplace, Student’s-t, Custom location-scale         | Gaussian × Gamma    |
-| `TAVIE_type_II`    | Count GLMs (Type II SSG)     | Binomial, Negative-Binomial                         | Gaussian                    |
-| `TAVIE_QR`         | Quantile Regression           | Asymmetric Laplace distribution            | Gaussian                    |
+---
 
+## TAVIE-SSG Functionalities
 
-For importing all these aforementioned classes and initializing them:
+The `TAVIE` package, located in the `TAVIE/` folder, implements TAVIE-SSG for several strongly super-Gaussian probability models. The implementation is modular and supports different likelihood families, prior structures, and modeling tasks.
+
+### Main TAVIE classes
+
+| Class | Target SSG model | Supported likelihoods | Prior type |
+|---|---|---|---|
+| `TAVIE_loc_scale` | Heavy-tailed location-scale regression; Type I SSG | Laplace, Student's-t, custom location-scale distributions | Gaussian $\times$ Gamma |
+| `TAVIE_type_II` | Count-response GLMs; Type II SSG | Binomial, Negative-Binomial | Gaussian |
+| `TAVIE_QR` | Bayesian quantile regression | Asymmetric Laplace | Gaussian |
+
+---
+
+## Importing and Initializing TAVIE Classes
 
 ```python
-# importing all the TAVIE classes
+# Import all TAVIE classes
 from TAVIE import *
 
-# initializing the TAVIE location-scale, TAVIE_QR, and TAVIE_type_II models respectively
+# ------------------------------------------------------------
+# Location-scale model: Type I SSG
+# Options: family="laplace", family="student", or family="loc_scale"
+# ------------------------------------------------------------
+loc_scale_model = TAVIE_loc_scale(
+    fit_intercept=True,
+    scale_X=False,
+    scale_y=False,
+    family="laplace",
+    afunc=None,
+    cfunc=None
+)
 
-## following is the location-scale example for 'laplace', other options are 'student' and 'loc_scale' (for general location-scale family)
-loc_scale_model = TAVIE_loc_scale(fit_intercept=True, scale_X=False, scale_y=False, family="laplace", afunc=None, cfunc=None)
+# ------------------------------------------------------------
+# Bayesian quantile regression model
+# ------------------------------------------------------------
+qr_model = TAVIE_QR(
+    fit_intercept=True,
+    scale_X=False,
+    scale_y=False
+)
 
-## following is the example for initializing the quantile regression TAVIE model
-qr_model = TAVIE(fit_intercept=True, scale_X=False, scale_y=False)
-
-## following is the Type II SSG example for 'negbin' (Megative-Binomial regression), the other option is 'binomial' for Logistic regression
-type_II_model = TAVIE_type_II(fit_intercept=True, scale_X=False, family="negbin")
+# ------------------------------------------------------------
+# Type II SSG model
+# Options: family="negbin" or family="binomial"
+# ------------------------------------------------------------
+type_II_model = TAVIE_type_II(
+    fit_intercept=True,
+    scale_X=False,
+    family="negbin"
+)
 ```
 
-**Note**: When initializing the *TAVIE location-scale model* under **custom** location-scale error distribution family, the user is required to pass callable functions `afunc` and `cfunc` to the `TAVIE_loc_scale()` class, as discussed in the subsequent section.
+> **Note.** For custom location-scale error distributions using `family="loc_scale"`, the user must provide callable functions `afunc` and `cfunc`.
 
 ---
 
-### Callable functions `afunc` and `cfunc` in `TAVIE_loc_scale()` for custom location-scale family
+## Custom Location-Scale Families
 
-The *callable* functions `afunc` and `cfunc` are defined in terms of the probability density function (PDF) of the location-scale error distribution family. In other words, when performing the regression $y_i = \boldsymbol{X}_i^{\top}\boldsymbol{\beta} + \epsilon_i$, where $\tau\epsilon_i$ has the PDF $p(x)$, the functions $A(x)$ and $c(x)$ are defined as:
-
-$$
-A(x) = -\frac{p'(x)}{2x\cdot p(x)} =(2x)^{-1}\cdot \frac{d}{dx}\log p(x),
-$$
+For a regression problem with general location-scale error distribution:
 
 $$
-c(x) = \log p(x)  - \frac{x\cdot p'(x)}{2\cdot p(x)} = \log p(x) - \frac{x}{2}\cdot \frac{d}{dx}\log p(x),
+y_i = \mathbf{x}_i^\top \boldsymbol{\beta} + \epsilon_i, \quad i\in [n],
 $$
 
-where $p'(x) = \frac{d}{dx} p(x)$. In particular, when calling `TAVIE_loc_scale()` class for `family="laplace"` and `family="student"`, the computation of the callable functions `afunc` and `cfunc` are performed in-built.
+where the scaled error $\tau \epsilon_i$ has density $p(x)$. The callable functions `afunc` and `cfunc` are defined using $p(x)$ and its derivative $p'(x)$.
+Specifically:
+
+$$
+A(x) = -\frac{p'(x)}{2x\cdot p(x)} = (2x)^{-1}\cdot \frac{d}{dx}\log p(x),
+$$
+
+and:
+
+$$
+c(x) = \log p(x) - \frac{x}{2}\cdot \frac{p'(x)}{p(x)} = \log p(x) - \frac{x}{2}\cdot \frac{d}{dx}\log p(x).
+$$
+
+For the built-in options `family="laplace"` and `family="student"`, these functions are already implemented internally.
 
 ---
 
-### Components of each TAVIE class
+## Common Methods Across TAVIE Classes
 
-For each of the TAVIE class listed above, following are the components and their respective functionalities.
+Each TAVIE class provides a consistent set of methods for fitting, extracting estimates, and tracking convergence.
 
-
-| Method Name                   | `TAVIE_loc_scale` | `TAVIE_type_II` | `TAVIE_QR` | Description                                                                 |
-|-------------------------------|:-------------------:|:-----------------:|:------------:|-----------------------------------------------------------------------------|
-| `fit()`                       | ✅                | ✅               | ✅         | Fits the TAVIE model                                            |
-| `get_TAVIE_means()`           | ✅                | ✅               | ✅         | Returns (and optionally displays) the TAVIE posterior means of parameters   |
-| `get_variational_estimates()` | ✅                | ✅               | ✅         | Returns a dictionary of variational estimates of the hyper-parameters           |
-| `get_elbo()`                  | ✅                | ✅               | ✅         | Returns ELBO values tracked across iterations                               |
-
-✅ = Supported. We give example usage of each of these above listed functions below for various SSG likelihoods considered in TAVIE.
+| Method | `TAVIE_loc_scale` | `TAVIE_type_II` | `TAVIE_QR` | Description |
+|---|:---:|:---:|:---:|---|
+| `fit()` | ✅ | ✅ | ✅ | Fits the TAVIE-SSG model. |
+| `get_TAVIE_means()` | ✅ | ✅ | ✅ | Returns and optionally displays the TAVIE-SSG posterior means. |
+| `get_variational_estimates()` | ✅ | ✅ | ✅ | Returns variational estimates of the model-specific hyperparameters. |
+| `get_elbo()` | ✅ | ✅ | ✅ | Returns the ELBO trajectory across iterations. |
 
 ---
 
-## TAVIE-SSG in action for SSG Type I family: Laplace likelihood
+## Example: Type I SSG Laplace Regression
 
-We consider showing the utilities of each components in the `TAVIE_loc_scale()` class, particularly for the SSG Type I family having the *Laplace* likelihood of the form:
+We illustrate TAVIE-SSG using the Type I SSG Laplace regression model.
 
-**Laplace error model**: $y_i = \beta_0 + \boldsymbol{X}_i^\top \boldsymbol{\beta} + \epsilon_i, \quad \text{where } \epsilon_i \sim \text{Laplace}(0, \sigma=\tau^{-1})$, for $i=1,2,\ldots,n$ with $f(\epsilon \mid \tau) = \frac{\tau}{2} \exp\left( -\tau \cdot |\epsilon| \right)$.
+### Model
 
-**Prior**: $(\boldsymbol{\beta}, \tau^2)$ is endowed upon with a prior as, $\boldsymbol{\beta}\mid \tau^2 \sim N(\boldsymbol{m}, \boldsymbol{V}/\tau^2)$ and $\tau^2\sim Gamma(a/2, b/2)$.
+The Laplace regression model is:
 
-We first generate the data from the Laplace model with data parameters:
-* $(n, p, \tau^2_{\text{true}}) = (10000, 5, 8)$,
-* The design matrix $X\in \mathbb{R}^{p+1}$ comprise of entries from the *standard normal distribution* with the first column being $1_n$ automatically added by the `TAVIE_loc_scale()` class on choosing `fit_intercept=True`,
-* $\boldsymbol{\beta}_{\text{true}} = (\beta_0, \beta)\in \mathbb{R}^{p+1}$ is also generated from the *standard normal distribution*, and
-* $\epsilon_i \sim Laplace(0, \tau_{\text{true}}^{-1})$.
+$$
+y_i = \beta_0 + \mathbf{x}_i\boldsymbol{\beta} + \epsilon_i,\quad \epsilon_i \sim \mathrm{Laplace}(0, \sigma=\tau^{-1}),\quad i\in [n],
+$$
+
+with $\epsilon_i$ having density (iid for all $i\in [n]$):
+
+$$
+f(\epsilon\mid \tau) = \frac{\tau}{2}\exp\left(-\tau \cdot |\epsilon|\right).
+$$
+
+The prior is:
+
+$$
+\boldsymbol{\beta}\mid \tau^{2}\sim \mathrm{N}(\mathbf{m}, \mathbf{V}/\tau^{2}),\quad \tau^{2}\sim \mathrm{Gamma}(a/2, b/2).
+$$
+
+### Simulate data
+
+We generate data with:
+
+$$
+(n, p, \tau^{2}_{\mathrm{true}}) = (10^4, 5, 8).
+$$
+
+The design matrix $\mathbf{X}\in \mathbb{R}^{n\times \overline{p+1}}$ has standard normal entries. An intercept column $\mathbf{1}_n$ is added automatically by the TAVIE class when `fit_intercept=True`. Also, $\beta_0$ is the intercept, $\boldsymbol{\beta}_{\mathrm{true}} \in \mathbb{R}^{p}$ is generated from a standard normal distribution, and $\epsilon_i\sim \mathrm{Laplace}(0, \tau_\mathrm{true}^{-1})$.
 
 ```python
 # Simulated data
@@ -183,166 +254,136 @@ n = 10000
 p = 5
 tau2 = 8
 
-# Design matrix, true regression coefficients and response
+# Design matrix
 X = np.random.normal(size=(n, p))
-beta_true = np.random.normal(loc=0.0, scale=1.0, size=p+1)
-error = np.random.laplace(size=n, loc=0.0, scale = 1/np.sqrt(tau2))
-y = beta_true[0] + X @ beta_true[1:len(beta_true)] + error
+
+# True regression coefficients
+beta_true = np.random.normal(loc=0.0, scale=1.0, size=p + 1)
+
+# Laplace noise
+error = np.random.laplace(
+    loc=0.0,
+    scale=1 / np.sqrt(tau2),
+    size=n
+)
+
+# Response
+y = beta_true[0] + X @ beta_true[1:] + error
 ```
 
-Consequently, we initialize the TAVIE model and *fit* the initialized model using `fit()` for this particular Laplace likelihood:
+### Fit the TAVIE-SSG model
 
 ```python
-# Initialize the TAVIE model for laplace likelihood
-laplace_model = TAVIE_loc_scale(family="laplace", fit_intercept=True) # choosing an intercept term
-laplace_model.fit(X, y, verbose=True) # fit the TAVIE model
+# Initialize the TAVIE model for the Laplace likelihood
+laplace_model = TAVIE_loc_scale(
+    family="laplace",
+    fit_intercept=True
+)
+
+# Fit the model
+laplace_model.fit(X, y, verbose=True)
 ```
 
-Now that the TAVIE model has been fit, we obtain the resultant *estimated TAVIE means* of $\beta_{\text{true}}$ and $\tau_{\text{true}}$ using the `get_TAVIE_means()` functionality along with printing them on the console using the `verbose=True` argument:
+### Obtain posterior mean estimates
 
 ```python
-laplace_model.get_TAVIE_means(verbose=True) # get the TAVIE estimates
+laplace_model.get_TAVIE_means(verbose=True)
 ```
 
 <p align="center">
   <img src="assets/laplace_TAVIE_res.png" alt="TAVIE Laplace results" width="600"/>
-  <br><em>Results of TAVIE for the Laplace model</em>
+  <br>
+  <em>TAVIE posterior mean estimates for the Laplace regression model.</em>
 </p>
 
-If the user is interested to obtain the *variational estimates* of the hyper-parameters ($\boldsymbol{m}$, $\boldsymbol{V}$, $a$, $b$), it can be done using `get_variational_estimates()`:
+### Extract variational estimates
+
+The variational hyperparameter estimates can be obtained as follows:
 
 ```python
-# obtain the variational parameter estimates; use 'variational_est' as required
 variational_est = laplace_model.get_variational_estimates()
 ```
 
-To check the convergence diagnostics, we also have the `get_elbo()` functionality that could be used to obtain the *evidence lower bound* (ELBO) history over iterations:
+### Extract ELBO trajectory
+
+The ELBO history across iterations can be obtained using:
 
 ```python
-ELBO = laplace_model.get_elbo() # get the ELBO across iterations
+ELBO = laplace_model.get_elbo()
 ```
 
 <p align="center">
   <img src="assets/TAVIE_Laplace_ELBO_animation.gif" alt="TAVIE Laplace ELBO" width="600"/>
-  <br><em>TAVIE converged in 112 iterations</em>
-</p>
-
-**Note**: TAVIE applied to other SSG likelihoods along with the utilities of each component in the different TAVIE classes have been illustrated in [TAVIE_examples.ipynb](./TAVIE_examples.ipynb).
-
----
-
-## TAVIE-SSG vs other state-of-the-art competing algorithms
-
-We present a bake-off of TAVIE-SSG against competing variational inference and MC sampling algorithms viz.,
-* `ADVI (MF)`: Automatic Differentiation Variational Inference ([Kucukelbir et al., 2017](https://jmlr.org/papers/v18/16-107.html)) in mean-field setting;
-* `ADVI (FR)`: ADVI in full-rank setting;
-* `DADVI`: Deterministic second-order ADVI ([Giordano et al., 2024](https://jmlr.org/papers/v25/23-1015.html));
-* `MFVI`: Mean-Field Variational Inference ([Wand et al., 2011](https://matt-p-wand.net/publicns/Wand11.pdf)) (for Student's-t SSG likelihood only); and
-* `NUTS`: No-U-Turn Monte Carlo Sampling algorithm from the [`PyMC`](https://www.pymc.io/welcome.html) python package ([Patil et al., 2010](https://www.jstatsoft.org/v035/i04)).
-
-To exemplify the performance of TAVIE-SSG against these competing methods, we illustrate the case of applying TAVIE-SSG to the *Student's-t* SSG likelihood.
-
-<p align="center">
-  <img src="results_compete/plots/Student_MSE_boxplots_multi_n_p_8.png" alt="" width="800"/>
-  <br><em>MSEs in log-scale of TAVIE-SSG and competitors for varying sample size and fixed dimension (p=8)</em>
-</p>
-
-<p align="center">
-  <img src="results_compete/plots/Student_MSE_boxplots_multi_p_n_1000.png" alt="" width="800"/>
-  <br><em>MSEs in log-scale of TAVIE-SSG and competitors for varying dimension and fixed sample size (n=1000)</em>
-</p>
-
-<p align="center">
-  <img src="results_compete/plots/runtime_Student_multi_n_multi_p.png" alt="" width="800"/>
-  <br><em>Runtimes in log-scale of TAVIE-SSG and competitors for varying sample size and feature dimensions</em>
-</p>
-
-These results demonstrate that TAVIE-SSG consistently matches or exceeds the accuracy of competing algorithms while delivering results orders of magnitude faster. To see results for varying sample sizes and number of features across different SSG likelihoods, and performance of TAVIE-SSG across different choices of the likelihood tempering parameter $\alpha$; refer to:
-
-<div align="center">
-
-| Description                   | `ipynb` file name | 
-|:-------------------------------:|:-------------------:|
-| Laplace                       | [Laplace_comparisons_dadvi_tavie_bbvi.ipynb](Laplace_comparisons_dadvi_tavie_bbvi.ipynb) |
-| Student's-t                    | [Student_comparisons_dadvi_tavie_mfvi_bbvi.ipynb](Student_comparisons_dadvi_tavie_mfvi_bbvi.ipynb) |
-| Negative-Binomial              | [NegBin_comparisons_dadvi_tavie_bbvi.ipynb](NegBin_comparisons_dadvi_tavie_bbvi.ipynb) |
-| General view of all results and metrics | [viewing_results.ipynb](viewing_results.ipynb) |
-| Auxiliary simulations | [simulation_reruns.ipynb](simulation_reruns.ipynb) |
-| For different likelihood tempering parameter choices | [simulation_alpha.ipynb](simulation_alpha.ipynb) |
-</div>
-
-**Note**: All the competing methods except DADVI and PyMC NUTS have been implemented in [CompetingMethods](CompetingMethods) directory. For implementing PyMC NUTS, the `Python` package `pymc` is to be installed and loaded. DADVI runs in its own dedicated `conda` environment with all the requirements installed; refer to [https://github.com/martiningram/dadvi](https://github.com/martiningram/dadvi) for the complete setup of DADVI.
-
-While *black-box variational inference* (BBVI) algorithms can yield reasonable approximations, they typically incur higher run-times and lack theoretical guarantees. Across all numerical experiments, TAVIE-SSG consistently demonstrates stronger empirical performance than the various BBVI methods. Although BBVI algorithms converge (refer to [convergence.ipynb](convergence.ipynb)), their estimates are generally less accurate than those produced by TAVIE-SSG.
-
-<p align="center">
-  <img src="results_compete/plots/Student_ELBO_n_2000_p_8.png" alt="" width="800"/>
-  <br><em>ELBO trajectories of TAVIE-SSG, ADVI MF, and ADVI FR under the Student's-t SSG likelihood with (n,p) = (2000, 8)</em>
+  <br>
+  <em>ELBO trajectory for the Laplace example. TAVIE converged in 112 iterations.</em>
 </p>
 
 ---
 
-## Real data application
+## Additional Examples
 
-We exemplify the application of TAVIE-SSG in two real-data studies as follows.
+Additional examples for other SSG likelihoods and all TAVIE class utilities are provided in:
 
-- **Quantile regression with U.S. 2000 Census data**: TAVIE-SSG is applied to perform *quantile regression* (hereby referred to as `TAVIE QR`) on the U.S. 2000 Census data (<http://www.census.gov/census2000/PUMS5.html>) to infer about the behavior of *log annual salary* with respect to different *demographic* characteristics. In particular, state-level Census 2000 data containing individual records of the characteristics for a $5\%$ sample of people and housing units has been taken into account. The log of annual salary is treated as the response with demographic characteristics (*gender*, *age*, *race*, *marital status*, and *education level*) of people with $40$ or more weeks of work in the previous year and $35$ or more hours per week of work, constitutes the set of primary features. `TAVIE QR`'s performance is compared with a fast approximate algorithm for quantile regression `Fast QR` (Algorithm $5$ in [Yang et al., 2013](http://proceedings.mlr.press/v28/yang13f.pdf)), where both the methods are applied on the U.S. 2000 Census dataset. Additionally, we also compare `TAVIE QR` with all the aformentioned competing methods (DADVI, ADVI (MF), ADVI (FR), NUTS) and a built-in quantile regression module from the `Python` package `statsmodels`.
-
-- **Negative-Binomial regression for predicting gene expressionsin STARmap data**: We use our TAVIE-SSG Negative-Binomial model for predicting gene expressions in the **STARmap** *spatial transcriptomics* data set (<https://lce.biohpc.swmed.edu/star/explorer.php>). STARmap consists of data from $4$ mice. The experimental mice were dark housed for $4$ days and then either exposed to light or kept in the dark for another one hour before obtaining measurements from the primary visual cortex of each of the mouse brain. The data comprises of the expression of $160$ genes with the number of cells varying between from $931$ to $1167$ for the $4$ diferent mice. We compare the performance of TAVIE-SSG, ADVI (MF), ADVI (FR), DADVI, and NUTS in predicting the gene expressions over different spatial locations.
-
-### TAVIE-SSG for Bayesian quantile regression in U.S. 2000 Census data
-
-We fit the `TAVIE_QR()` module (class) on $n = 5 \times 10^6$ data points across $p=11$ features (viz., `Female`, `Age30`, `Age40`, `Age50`, `Age60`, `Age70`, `NonWhite`, `Married`, `Education`, `Education2`, and `Intercept`). Following are the plots of the `TAVIE QR` estimates for different quantiles across each of the variables along with the corresponding $95%$ confidence bands.
-
-<p align="center">
-  <img src="results_data_study/census_QR/TAVIE_QR_95_CI.png" alt="TAVIE QR estimates" width="850"/>
-  <br><em>TAVIE-SSG QR estimates along with 95% confidence bands</em>
-</p>
-
-Following are the quantile estimates across different features for all the methods. These results correspond to running the algorithms (except `FAST QR`) on $n=10000$ data points because of the high run-time incurred by `DADVI`.
-
-<p align="center">
-  <img src="results_data_study/census_QR/comparison.png" alt="comparison" width="900"/>
-  <br><em>Comparison of TAVIE-SSG QR and competing methods</em>
-</p>
-
-Observe that, the `TAVIE QR` estimates (using $n=10000$) almost coincides with the `FAST QR` estimates (implemented on the full dataset) in the plot above. It is important to note that, `FAST QR` aims at providing scalable quantile regression solutions in large-scale problems, which is beyond the scope of TAVIE-SSG and is only used as a means of empirical validation. The estimates from `TAVIE QR`, `ADVI (MF)`, `NUTS`, and `statsmodels` compares well with `FAST QR`. The figure below represents that `TAVIE QR` is orders of magnitude faster than the competing methods executed on the sub-sampled Census dataset. For the detailed code implementation, refer to [census_QR_data_study_main.ipynb](census_QR_data_study_main.ipynb).
-
-<p align="center">
-  <img src="results_data_study/census_QR/runtime_comparison_n_10000.png" alt="runtime" width="800"/>
-  <br><em>Runtimes (in log-scale) of TAVIE-SSG and competitors for performing Bayesian quantile regression</em>
-</p>
-
-
-### TAVIE-SSG for Negative-Binomial spatial regression in STARmap data
-
-We fit the `TAVIE_type_II(..., family='negbin')` module (class) on the expression for each of $G=160$ genes across $n = 941$ cells (spatial locations). A basis of $p=27$ *product cubic B-spline functions* was computed at each of the spatial locations.
-
-Comparatively, we fit `ADVI (MF)`, `ADVI (FR)`, `DADVI`, and `NUTS` to compare the spatial gene expressions predictions with `TAVIE`.
-
-<p align="center">
-  <img src="results_data_study/STARmap/Slc17a7.png" alt="fitted" width="800"/>
-  <br><em>Predicted expression of gene 'Slc17a7' by TAVIE-SSG and competing methods</em>
-</p>
-
-The table below lists each competing method along with the number of gene expressions for which its *Pearson residual sum of squares* exceeds that of TAVIE-SSG.
-
-<div align="center">
-
-| Method | TAVIE-SSG Pearson RSS is lower |
-|:-------------------:|:----------------------------------------:|
-| **DADVI**         | 150                                    |
-| **ADVI (MF)**       | 160                                    |
-| **ADVI (FR)**       | 142                                    |
-| **NUTS**          | 58                                     |
-
-</div>
-
-The accompanying plot illustrates the goodness-of-fit for each method in predicting the $G=160$ spatially varying gene expressions. For a detailed study, refer to [STARmap_data_study.ipynb](STARmap_data_study.ipynb).
-
-<p align="center">
-  <img src="results_data_study/STARmap/heatmap_random_genes_1_40.png" alt="fitted" width="800"/>
-  <br><em>Pearson RSS plot for TAVIE-SSG and competing methods for 40 randomly selected genes</em>
-</p>
+[`TAVIE-SSG_examples.ipynb`](./TAVIE-SSG_examples.ipynb)
 
 ---
+
+## Suggested Reproducibility Workflow for Reviewers
+
+To reproduce the main functionality and examples:
+
+```bash
+# 1. Install core dependencies
+pip install numpy pandas scipy matplotlib scikit-learn ipython rich tqdm
+
+# 2. Install additional dependencies for full simulations and competing methods
+pip install seaborn pymc pytensor arviz jax jaxlib rdata statsmodels xarray
+
+# 3. Install DADVI separately following its official instructions
+# https://github.com/martiningram/dadvi
+```
+
+Then run the notebooks in the following order:
+
+1. `TAVIE-SSG_examples.ipynb`
+2. `student-t_simulations.ipynb`
+3. `laplace_simulations.ipynb`
+4. `negative-binomial_simulations.ipynb`
+5. `STARmap.ipynb`
+6. `BQR_census.ipynb`
+7. Supplementary notebooks listed in the reproducibility table above.
+
+For a quick check of the core implementation, start with:
+
+```text
+TAVIE-SSG_examples.ipynb
+```
+
+For reproducing manuscript-level simulation figures and tables, use:
+
+```text
+student-t_simulations.ipynb
+laplace_simulations.ipynb
+negative-binomial_simulations.ipynb
+```
+
+For reproducing real-data studies, use:
+
+```text
+STARmap.ipynb
+BQR_census.ipynb
+```
+
+---
+
+## Data studies
+
+We evaluate TAVIE-SSG on two real-data applications.
+
+### U.S. Census 2000: Bayesian quantile regression
+
+We use the U.S. Census 2000 data, containing demographic records from a $5\%$ sample of the U.S. population. The response is the census outcome variable `census_y` (income), and the design matrix `census_X` contains an intercept and demographic covariates: `Female`, age-group indicators (`Age30`, `Age40`, `Age50`, `Age60`, `Age70`), `NonWhite`, `Married`, `Education`, and `Education2`; $n=5\times 10^6$ and $p=11$. We fit Bayesian quantile regression under the Asymmetric Laplace likelihood across quantile levels $(0.05, 0.10, \ldots, 0.95)$. The proposed TAVIE-SSG framework is compared with DADVI, ADVI (MF), ADVI (FR), PyMC (NUTS), FAST QR, and statsmodels. See [`BQR_census.ipynb`](BQR_census.ipynb).
+
+### STARmap spatial transcriptomics: Negative-Binomial regression
+
+We use the STARmap visual cortex spatial transcriptomics dataset, focusing on one representative tissue sample with $G=160$ genes measured over $n=941$ spatial locations. The response is the gene-expression count matrix, where each column corresponds to one gene and each row corresponds to one spatial location. Spatial coordinates are used to construct spline-based covariates ($p=27$), and each gene is modeled separately using a Negative-Binomial regression model. The proposed TAVIE-SSG framework is compared with DADVI, ADVI (MF), ADVI (FR), and PyMC (NUTS) in terms of fitted gene-expression patterns, prediction quality, residual diagnostics, and runtime. See [`STARmap.ipynb`](STARmap.ipynb).

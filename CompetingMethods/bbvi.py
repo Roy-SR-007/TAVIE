@@ -19,6 +19,7 @@ from torch.distributions import MultivariateNormal
 from sklearn.linear_model import LogisticRegression
 from numpy.linalg import solve
 
+
 def BBVI_Laplace_fullcov_AdamW_best(
     X: np.ndarray,
     y: np.ndarray,
@@ -33,38 +34,49 @@ def BBVI_Laplace_fullcov_AdamW_best(
     verbose: bool = True
 ):
     """
-    Under the Laplace SSG likelihood and the Normal-Gamma variational family, 
-    'BBVI_Laplace_fullcov_AdamW_best()' performs the BBVI algorithm with a full 
-    covariance structure for the variational family of beta. The convergence of 
-    the algorithm is monitored by using the change in ELBO over a 'tol' for 
-    'patience' number of steps. Returns the BBVI estimates corresponding to the 
-    best ELBO value and performs the optimization using AdamW.
+    Full-rank ADVI for Laplace regression.
+
+    Variational family:
+        q(beta, tau2) = q(beta) q(tau2),
+        q(beta) = N(q_mu, Sigma_beta),
+        q(tau2) = Gamma(q_alpha_shape, q_tau_rate)
+
+    Returns the best variational hyperparameters corresponding to the best ELBO.
     """
+
     n, p = X.shape
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     X_t = torch.from_numpy(X).float().to(device)
     y_t = torch.from_numpy(y).float().to(device)
     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
     Sigma_inv = torch.inverse(Sigma_t)
 
-    # Initialize variational parameters
+    # ------------------------------------------------------------
+    # variational parameters
+    # ------------------------------------------------------------
     q_mu = nn.Parameter(torch.zeros(p, device=device))
+
     with torch.no_grad():
         XtX = X_t.T @ X_t
         Xty = X_t.T @ y_t
         q_mu.copy_(torch.linalg.solve(XtX, Xty))
+
     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
-    q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
-    q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+    q_alpha_unconstrained = nn.Parameter(torch.tensor(0.0, device=device))
+    q_log_rate_unconstrained = nn.Parameter(torch.tensor(0.0, device=device))
 
-    optimizer = optim.AdamW([
-        {"params": [q_mu], "weight_decay": 0.0},
-        {"params": [L_unconstrained], "weight_decay": weight_decay},
-        {"params": [q_alpha, q_log_b], "weight_decay": 0.0},
-    ], lr=lr)
+    optimizer = optim.AdamW(
+        [
+            {"params": [q_mu], "weight_decay": 0.0},
+            {"params": [L_unconstrained], "weight_decay": weight_decay},
+            {"params": [q_alpha_unconstrained, q_log_rate_unconstrained], "weight_decay": 0.0},
+        ],
+        lr=lr
+    )
 
-    def get_scale_tril():
-        L = torch.tril(L_unconstrained)
+    def get_scale_tril(L_unc):
+        L = torch.tril(L_unc)
         diag = torch.diagonal(L, 0)
         L = L.clone()
         L[range(p), range(p)] = torch.exp(diag)
@@ -75,62 +87,202 @@ def BBVI_Laplace_fullcov_AdamW_best(
     elbo_hist = []
 
     best_q_mu = None
-    best_alpha = None
-    best_rate = None
+    best_L = None
+    best_q_alpha_shape = None
+    best_q_tau_rate = None
 
     for it in range(max_iters):
         optimizer.zero_grad()
 
-        L = get_scale_tril()
+        # q(beta)
+        L = get_scale_tril(L_unconstrained)
         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
         beta_samp = q_beta.rsample()
 
-        alpha = torch.nn.functional.softplus(q_alpha)
-        rate = torch.nn.functional.softplus(q_log_b)
-        q_tau = Gamma(concentration=alpha, rate=rate)
+        # q(tau2)
+        q_alpha_shape = torch.nn.functional.softplus(q_alpha_unconstrained)
+        q_tau_rate = torch.nn.functional.softplus(q_log_rate_unconstrained)
+        q_tau = Gamma(concentration=q_alpha_shape, rate=q_tau_rate)
         tau2_samp = q_tau.rsample()
 
-        # Laplace log-likelihood
+        # --------------------------------------------------------
+        # log-likelihood: Laplace
+        # --------------------------------------------------------
         tau = torch.sqrt(tau2_samp)
-        log_lik = n * torch.log(tau) - tau * torch.sum(torch.abs(y_t - X_t @ beta_samp))
-        # Prior log-densities
-        quad = beta_samp @ (Sigma_inv @ beta_samp)
-        log_p_b = (p/2)*torch.log(tau2_samp) - 0.5*tau2_samp*quad
-        log_p_t = (a - 1)*torch.log(tau2_samp) - b*tau2_samp
+        resid = y_t - X_t @ beta_samp
+        log_lik = n * torch.log(tau) - tau * torch.sum(torch.abs(resid))
 
-        logp = log_lik + log_p_b + log_p_t
-        logq_b = q_beta.log_prob(beta_samp)
-        logq_t = q_tau.log_prob(tau2_samp)
-        elbo = logp - (logq_b + logq_t)
-        
-        (-elbo).backward()
+        # --------------------------------------------------------
+        # prior terms
+        # beta | tau2 ~ N(0, Sigma_prior / tau2)
+        # tau2 ~ Gamma(a, b)   [up to normalizing constants]
+        # --------------------------------------------------------
+        quad = beta_samp @ (Sigma_inv @ beta_samp)
+        log_p_beta = (p / 2.0) * torch.log(tau2_samp) - 0.5 * tau2_samp * quad
+        log_p_tau2 = (a - 1.0) * torch.log(tau2_samp) - b * tau2_samp
+
+        logp = log_lik + log_p_beta + log_p_tau2
+
+        # --------------------------------------------------------
+        # variational density
+        # --------------------------------------------------------
+        logq_beta = q_beta.log_prob(beta_samp)
+        logq_tau2 = q_tau.log_prob(tau2_samp)
+
+        elbo = logp - logq_beta - logq_tau2
+        loss = -elbo
+        loss.backward()
         optimizer.step()
 
-        elbo_val = elbo.item()
+        elbo_val = float(elbo.item())
         elbo_hist.append(elbo_val)
 
         if elbo_val > best_elbo + tol:
             best_elbo = elbo_val
             no_improve = 0
+
             best_q_mu = q_mu.detach().clone()
-            best_alpha = alpha.detach().clone()
-            best_rate = rate.detach().clone()
+            best_L = get_scale_tril(L_unconstrained).detach().clone()
+            best_q_alpha_shape = q_alpha_shape.detach().clone()
+            best_q_tau_rate = q_tau_rate.detach().clone()
         else:
             no_improve += 1
 
         if no_improve >= patience:
             if verbose:
-                print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+                print(f"Early stopping at iter {it}: no ELBO gain >= {tol} for {patience} iterations.")
             break
 
     beta_mean = best_q_mu.cpu().numpy()
-    tau2_mean = (best_alpha / best_rate).item()
+    tau2_mean = (best_q_alpha_shape / best_q_tau_rate).item()
 
     return {
         "beta_mean": beta_mean,
         "tau2_mean": tau2_mean,
-        "elbo_hist": elbo_hist
+
+        # variational hyperparameters
+        "q_mu": best_q_mu.cpu().numpy(),
+        "q_L": best_L.cpu().numpy(),
+        "q_cov": (best_L @ best_L.T).cpu().numpy(),
+        "q_alpha_shape": float(best_q_alpha_shape.item()),
+        "q_tau_rate": float(best_q_tau_rate.item()),
+
+        "best_elbo": best_elbo,
+        "elbo_hist": elbo_hist,
     }
+    
+# def BBVI_Laplace_fullcov_AdamW_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     Sigma_prior: np.ndarray,
+#     a: float,
+#     b: float,
+#     lr: float = 1e-3,
+#     max_iters: int = 20000,
+#     tol: float = 1e-8,
+#     patience: int = 1000,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     Under the Laplace SSG likelihood and the Normal-Gamma variational family, 
+#     'BBVI_Laplace_fullcov_AdamW_best()' performs the BBVI algorithm with a full 
+#     covariance structure for the variational family of beta. The convergence of 
+#     the algorithm is monitored by using the change in ELBO over a 'tol' for 
+#     'patience' number of steps. Returns the BBVI estimates corresponding to the 
+#     best ELBO value and performs the optimization using AdamW.
+#     """
+#     n, p = X.shape
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+#     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
+#     Sigma_inv = torch.inverse(Sigma_t)
+
+#     # Initialize variational parameters
+#     q_mu = nn.Parameter(torch.zeros(p, device=device))
+#     with torch.no_grad():
+#         XtX = X_t.T @ X_t
+#         Xty = X_t.T @ y_t
+#         q_mu.copy_(torch.linalg.solve(XtX, Xty))
+#     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
+#     q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
+#     q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+
+#     optimizer = optim.AdamW([
+#         {"params": [q_mu], "weight_decay": 0.0},
+#         {"params": [L_unconstrained], "weight_decay": weight_decay},
+#         {"params": [q_alpha, q_log_b], "weight_decay": 0.0},
+#     ], lr=lr)
+
+#     def get_scale_tril():
+#         L = torch.tril(L_unconstrained)
+#         diag = torch.diagonal(L, 0)
+#         L = L.clone()
+#         L[range(p), range(p)] = torch.exp(diag)
+#         return L
+
+#     best_elbo = -float("inf")
+#     no_improve = 0
+#     elbo_hist = []
+
+#     best_q_mu = None
+#     best_alpha = None
+#     best_rate = None
+
+#     for it in range(max_iters):
+#         optimizer.zero_grad()
+
+#         L = get_scale_tril()
+#         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
+#         beta_samp = q_beta.rsample()
+
+#         alpha = torch.nn.functional.softplus(q_alpha)
+#         rate = torch.nn.functional.softplus(q_log_b)
+#         q_tau = Gamma(concentration=alpha, rate=rate)
+#         tau2_samp = q_tau.rsample()
+
+#         # Laplace log-likelihood
+#         tau = torch.sqrt(tau2_samp)
+#         log_lik = n * torch.log(tau) - tau * torch.sum(torch.abs(y_t - X_t @ beta_samp))
+#         # Prior log-densities
+#         quad = beta_samp @ (Sigma_inv @ beta_samp)
+#         log_p_b = (p/2)*torch.log(tau2_samp) - 0.5*tau2_samp*quad
+#         log_p_t = (a - 1)*torch.log(tau2_samp) - b*tau2_samp
+
+#         logp = log_lik + log_p_b + log_p_t
+#         logq_b = q_beta.log_prob(beta_samp)
+#         logq_t = q_tau.log_prob(tau2_samp)
+#         elbo = logp - (logq_b + logq_t)
+        
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         elbo_val = elbo.item()
+#         elbo_hist.append(elbo_val)
+
+#         if elbo_val > best_elbo + tol:
+#             best_elbo = elbo_val
+#             no_improve = 0
+#             best_q_mu = q_mu.detach().clone()
+#             best_alpha = alpha.detach().clone()
+#             best_rate = rate.detach().clone()
+#         else:
+#             no_improve += 1
+
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+#             break
+
+#     beta_mean = best_q_mu.cpu().numpy()
+#     tau2_mean = (best_alpha / best_rate).item()
+
+#     return {
+#         "beta_mean": beta_mean,
+#         "tau2_mean": tau2_mean,
+#         "elbo_hist": elbo_hist
+#     }
 
 def BBVI_Laplace_patience_best(
     X: np.ndarray,
@@ -145,89 +297,330 @@ def BBVI_Laplace_patience_best(
     verbose: bool = True
 ):
     """
-    Under the Laplace SSG likelihood and the Normal-Gamma variational family, 
-    'BBVI_Laplace_patience_best()' performs a vanilla BBVI algorithm with a 
-    diagonal covariance structure for the variational family of beta. The 
-    convergence of the algorithm is monitored by using the change in ELBO over 
-    a 'tol' for 'patience' number of steps. Returns the BBVI estimates corresponding 
-    to the best ELBO value and performs the optimization using AdamW.
+    Mean-field ADVI for Laplace regression.
+
+    Variational family:
+        q(beta, tau2) = q(beta) q(tau2),
+        q(beta) = product_j N(q_mu_j, q_sd_j^2),
+        q(tau2) = Gamma(q_alpha_shape, q_tau_rate)
+
+    Returns the best variational hyperparameters corresponding to the best ELBO.
     """
+
     n, p = X.shape
 
-    # Move data to device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_t = torch.from_numpy(X).float().to(device)
     y_t = torch.from_numpy(y).float().to(device)
 
-    # Prior hyperparameters
+    # Prior mean for beta
     mu0 = torch.zeros(p, device=device)
     a0, b0 = a, b
 
     # Variational parameters
-    q_mu    = nn.Parameter(torch.zeros(p, device=device))
+    q_mu = nn.Parameter(torch.zeros(p, device=device))
     q_log_s = nn.Parameter(torch.zeros(p, device=device))
-    q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
-    q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+    q_alpha_unconstrained = nn.Parameter(torch.tensor(0.0, device=device))
+    q_log_rate_unconstrained = nn.Parameter(torch.tensor(0.0, device=device))
 
-    # AdamW optimizer: apply weight decay on log-scale (covariance) only
-    optimizer = optim.AdamW([
-        {"params": [q_mu],    "weight_decay": 0.0},
-        {"params": [q_log_s], "weight_decay": weight_decay},
-        {"params": [q_alpha, q_log_b], "weight_decay": 0.0}
-    ], lr=lr)
+    optimizer = optim.AdamW(
+        [
+            {"params": [q_mu], "weight_decay": 0.0},
+            {"params": [q_log_s], "weight_decay": weight_decay},
+            {"params": [q_alpha_unconstrained, q_log_rate_unconstrained], "weight_decay": 0.0},
+        ],
+        lr=lr
+    )
 
     def log_joint(beta, tau2):
         tau = torch.sqrt(tau2)
         resid = y_t - X_t @ beta
         log_lik = n * torch.log(tau) - tau * torch.sum(torch.abs(resid))
-        delta = beta - mu0
-        log_p_beta = (p/2) * torch.log(tau2) - 0.5 * tau2 * (delta @ delta)
-        log_p_tau = (a0 - 1) * torch.log(tau2) - b0 * tau2
-        return log_lik + log_p_beta + log_p_tau
 
-    best_elbo = -float('inf')
+        delta = beta - mu0
+        log_p_beta = (p / 2.0) * torch.log(tau2) - 0.5 * tau2 * (delta @ delta)
+        log_p_tau2 = (a0 - 1.0) * torch.log(tau2) - b0 * tau2
+
+        return log_lik + log_p_beta + log_p_tau2
+
+    best_elbo = -float("inf")
     no_improve = 0
     elbo_hist = []
 
-    # Storage for best parameters
     best_q_mu = None
-    best_alpha = None
-    best_rate = None
+    best_q_log_s = None
+    best_q_alpha_shape = None
+    best_q_tau_rate = None
 
     for it in range(max_iters):
         optimizer.zero_grad()
 
-        # Sample β ~ q(β)
+        # q(beta): diagonal Gaussian
         eps = torch.randn(p, device=device)
-        s = torch.exp(q_log_s)
-        beta_samp = q_mu + s * eps
+        q_sd = torch.exp(q_log_s)
+        beta_samp = q_mu + q_sd * eps
 
-        # Sample τ² ~ q(τ²)
-        alpha = torch.nn.functional.softplus(q_alpha)
-        rate  = torch.nn.functional.softplus(q_log_b)
-        gamma_dist = Gamma(concentration=alpha, rate=rate)
-        tau2_samp  = gamma_dist.rsample()
+        # q(tau2): Gamma
+        q_alpha_shape = torch.nn.functional.softplus(q_alpha_unconstrained)
+        q_tau_rate = torch.nn.functional.softplus(q_log_rate_unconstrained)
+        q_tau = Gamma(concentration=q_alpha_shape, rate=q_tau_rate)
+        tau2_samp = q_tau.rsample()
 
-        # Compute ELBO
+        # ELBO
         logp = log_joint(beta_samp, tau2_samp)
-        logq_beta = Normal(q_mu, s).log_prob(beta_samp).sum()
-        logq_tau  = gamma_dist.log_prob(tau2_samp)
-        elbo = logp - (logq_beta + logq_tau)
+        logq_beta = Normal(q_mu, q_sd).log_prob(beta_samp).sum()
+        logq_tau2 = q_tau.log_prob(tau2_samp)
 
-        # Gradient step
-        (-elbo).backward()
+        elbo = logp - logq_beta - logq_tau2
+        loss = -elbo
+        loss.backward()
         optimizer.step()
 
-        elbo_val = elbo.item()
+        elbo_val = float(elbo.item())
         elbo_hist.append(elbo_val)
 
-        # Check for best ELBO
         if elbo_val > best_elbo + tol:
             best_elbo = elbo_val
             no_improve = 0
+
             best_q_mu = q_mu.detach().clone()
-            best_alpha = alpha.detach().clone()
-            best_rate = rate.detach().clone()
+            best_q_log_s = q_log_s.detach().clone()
+            best_q_alpha_shape = q_alpha_shape.detach().clone()
+            best_q_tau_rate = q_tau_rate.detach().clone()
+        else:
+            no_improve += 1
+
+        if no_improve >= patience:
+            if verbose:
+                print(f"Early stopping at iter {it}: no ELBO gain >= {tol} for {patience} iterations.")
+            break
+
+    q_sd_best = torch.exp(best_q_log_s)
+
+    beta_mean = best_q_mu.cpu().numpy()
+    tau2_mean = (best_q_alpha_shape / best_q_tau_rate).item()
+
+    return {
+        "beta_mean": beta_mean,
+        "tau2_mean": tau2_mean,
+
+        # variational hyperparameters
+        "q_mu": best_q_mu.cpu().numpy(),
+        "q_log_s": best_q_log_s.cpu().numpy(),
+        "q_sd": q_sd_best.cpu().numpy(),
+        "q_var": (q_sd_best ** 2).cpu().numpy(),
+
+        "q_alpha_shape": float(best_q_alpha_shape.item()),
+        "q_tau_rate": float(best_q_tau_rate.item()),
+
+        "best_elbo": best_elbo,
+        "elbo_hist": elbo_hist,
+    }
+
+
+# def BBVI_Laplace_patience_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     a: float,
+#     b: float,
+#     lr: float = 1e-3,
+#     max_iters: int = 20000,
+#     tol: float = 1e-8,
+#     patience: int = 1000,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     Under the Laplace SSG likelihood and the Normal-Gamma variational family, 
+#     'BBVI_Laplace_patience_best()' performs a vanilla BBVI algorithm with a 
+#     diagonal covariance structure for the variational family of beta. The 
+#     convergence of the algorithm is monitored by using the change in ELBO over 
+#     a 'tol' for 'patience' number of steps. Returns the BBVI estimates corresponding 
+#     to the best ELBO value and performs the optimization using AdamW.
+#     """
+#     n, p = X.shape
+
+#     # Move data to device
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+
+#     # Prior hyperparameters
+#     mu0 = torch.zeros(p, device=device)
+#     a0, b0 = a, b
+
+#     # Variational parameters
+#     q_mu    = nn.Parameter(torch.zeros(p, device=device))
+#     q_log_s = nn.Parameter(torch.zeros(p, device=device))
+#     q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
+#     q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+
+#     # AdamW optimizer: apply weight decay on log-scale (covariance) only
+#     optimizer = optim.AdamW([
+#         {"params": [q_mu],    "weight_decay": 0.0},
+#         {"params": [q_log_s], "weight_decay": weight_decay},
+#         {"params": [q_alpha, q_log_b], "weight_decay": 0.0}
+#     ], lr=lr)
+
+#     def log_joint(beta, tau2):
+#         tau = torch.sqrt(tau2)
+#         resid = y_t - X_t @ beta
+#         log_lik = n * torch.log(tau) - tau * torch.sum(torch.abs(resid))
+#         delta = beta - mu0
+#         log_p_beta = (p/2) * torch.log(tau2) - 0.5 * tau2 * (delta @ delta)
+#         log_p_tau = (a0 - 1) * torch.log(tau2) - b0 * tau2
+#         return log_lik + log_p_beta + log_p_tau
+
+#     best_elbo = -float('inf')
+#     no_improve = 0
+#     elbo_hist = []
+
+#     # Storage for best parameters
+#     best_q_mu = None
+#     best_alpha = None
+#     best_rate = None
+
+#     for it in range(max_iters):
+#         optimizer.zero_grad()
+
+#         # Sample β ~ q(β)
+#         eps = torch.randn(p, device=device)
+#         s = torch.exp(q_log_s)
+#         beta_samp = q_mu + s * eps
+
+#         # Sample τ² ~ q(τ²)
+#         alpha = torch.nn.functional.softplus(q_alpha)
+#         rate  = torch.nn.functional.softplus(q_log_b)
+#         gamma_dist = Gamma(concentration=alpha, rate=rate)
+#         tau2_samp  = gamma_dist.rsample()
+
+#         # Compute ELBO
+#         logp = log_joint(beta_samp, tau2_samp)
+#         logq_beta = Normal(q_mu, s).log_prob(beta_samp).sum()
+#         logq_tau  = gamma_dist.log_prob(tau2_samp)
+#         elbo = logp - (logq_beta + logq_tau)
+
+#         # Gradient step
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         elbo_val = elbo.item()
+#         elbo_hist.append(elbo_val)
+
+#         # Check for best ELBO
+#         if elbo_val > best_elbo + tol:
+#             best_elbo = elbo_val
+#             no_improve = 0
+#             best_q_mu = q_mu.detach().clone()
+#             best_alpha = alpha.detach().clone()
+#             best_rate = rate.detach().clone()
+#         else:
+#             no_improve += 1
+
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+#             break
+
+#     # Use best parameters for output
+#     beta_mean = best_q_mu.cpu().numpy()
+#     tau2_mean = (best_alpha / best_rate).item()
+
+#     return {
+#         'beta_mean': beta_mean,
+#         'tau2_mean': tau2_mean,
+#         'elbo_hist': elbo_hist
+#     }
+
+# ============================================================
+# ADVI (MF): Student, returning hyperparameters
+# ============================================================
+def BBVI_student_patience_best(
+    X: np.ndarray,
+    y: np.ndarray,
+    nu: float,
+    a0: float = 0.05,
+    b0: float = 0.05,
+    num_iters: int = 20000,
+    lr: float = 1e-3,
+    tol: float = 1e-8,
+    patience: int = 1000,
+    weight_decay: float = 1e-2,
+    verbose: bool = True
+):
+    n, p = X.shape
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    X_t = torch.from_numpy(X).float().to(device)
+    y_t = torch.from_numpy(y).float().to(device)
+    nu_t = torch.tensor(nu, dtype=torch.float32, device=device)
+
+    q_mu = nn.Parameter(torch.zeros(p, device=device))
+    with torch.no_grad():
+        XtX = X_t.T @ X_t + 1e-6 * torch.eye(p, device=device)
+        Xty = X_t.T @ y_t
+        q_mu.copy_(torch.linalg.solve(XtX, Xty))
+
+    q_log_s = nn.Parameter(torch.zeros(p, device=device))
+    q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
+    q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+
+    optimizer = optim.AdamW([q_mu, q_log_s, q_alpha, q_log_b], lr=lr, weight_decay=weight_decay)
+
+    def log_joint(beta, tau2):
+        resid = y_t - X_t @ beta
+        tau = torch.sqrt(tau2)
+        const = (
+            torch.lgamma((nu_t + 1) / 2)
+            - torch.lgamma(nu_t / 2)
+            - 0.5 * torch.log(nu_t * torch.tensor(np.pi, device=device))
+        )
+        log_lik = n * (const + torch.log(tau)) \
+                  - ((nu_t + 1) / 2) * torch.sum(torch.log1p((tau2 * resid**2) / nu_t))
+        quad = beta @ beta
+        log_p_b = (p / 2) * torch.log(tau2) - 0.5 * tau2 * quad
+        log_p_t = (a0 - 1) * torch.log(tau2) - b0 * tau2
+        return log_lik + log_p_b + log_p_t
+
+    best_elbo = -float("inf")
+    no_improve = 0
+    elbo_hist = []
+
+    best_mu = None
+    best_log_s = None
+    best_alpha = None
+    best_rate = None
+
+    for it in range(num_iters):
+        optimizer.zero_grad()
+
+        eps = torch.randn(p, device=device)
+        s = torch.exp(q_log_s)
+        beta_s = q_mu + s * eps
+
+        alpha_v = torch.nn.functional.softplus(q_alpha)
+        rate_v = torch.nn.functional.softplus(q_log_b)
+        q_tau2 = Gamma(concentration=alpha_v, rate=rate_v)
+        tau2_s = q_tau2.rsample()
+
+        logp = log_joint(beta_s, tau2_s)
+        logq_beta = Normal(q_mu, s).log_prob(beta_s).sum()
+        logq_tau = q_tau2.log_prob(tau2_s)
+        elbo = logp - (logq_beta + logq_tau)
+
+        (-elbo).backward()
+        optimizer.step()
+
+        val = float(elbo.item())
+        elbo_hist.append(val)
+
+        if val > best_elbo + tol:
+            best_elbo = val
+            no_improve = 0
+            best_mu = q_mu.detach().clone()
+            best_log_s = q_log_s.detach().clone()
+            best_alpha = alpha_v.detach().clone()
+            best_rate = rate_v.detach().clone()
         else:
             no_improve += 1
 
@@ -236,17 +629,23 @@ def BBVI_Laplace_patience_best(
                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
             break
 
-    # Use best parameters for output
-    beta_mean = best_q_mu.cpu().numpy()
-    tau2_mean = (best_alpha / best_rate).item()
+    best_sd = torch.exp(best_log_s)
 
     return {
-        'beta_mean': beta_mean,
-        'tau2_mean': tau2_mean,
-        'elbo_hist': elbo_hist
+        "beta_mean": best_mu.cpu().numpy(),
+        "tau2_mean": (best_alpha / best_rate).item(),
+        "q_mu": best_mu.cpu().numpy(),
+        "q_log_s": best_log_s.cpu().numpy(),
+        "q_sd": best_sd.cpu().numpy(),
+        "q_alpha_shape": float(best_alpha.item()),
+        "q_tau_rate": float(best_rate.item()),
+        "elbo_hist": elbo_hist,
+        "best_elbo": best_elbo,
     }
-
-
+    
+# ============================================================
+# ADVI (FR): Student, returning hyperparameters
+# ============================================================
 def BBVI_student_fullcov_AdamW_best(
     X: np.ndarray,
     y: np.ndarray,
@@ -261,45 +660,26 @@ def BBVI_student_fullcov_AdamW_best(
     weight_decay: float = 1e-2,
     verbose: bool = True
 ):
-    """
-    Under the Student's-t SSG likelihood and the Normal-Gamma variational family, 
-    'BBVI_student_fullcov_AdamW_best()' performs the BBVI algorithm with a full 
-    covariance structure for the variational family of beta. The convergence of 
-    the algorithm is monitored by using the change in ELBO over a 'tol' for 
-    'patience' number of steps. Returns the BBVI estimates corresponding to the 
-    best ELBO value and performs the optimization using AdamW.
-    """
     n, p = X.shape
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Move data & prior
     X_t = torch.from_numpy(X).float().to(device)
     y_t = torch.from_numpy(y).float().to(device)
     nu_t = torch.tensor(nu, dtype=torch.float32, device=device)
     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
     Sigma_inv = torch.inverse(Sigma_t)
 
-    # 1) Variational parameters
-    # 1.1) q_mu init at OLS
     q_mu = nn.Parameter(torch.zeros(p, device=device))
     with torch.no_grad():
         XtX = X_t.T @ X_t
         Xty = X_t.T @ y_t
         q_mu.copy_(torch.linalg.solve(XtX, Xty))
 
-    # 1.2) identity init for full-cov
     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
-
-    # 1.3) precision variational
     q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
     q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
 
-    # 2) AdamW optimizer on all params
-    optimizer = optim.AdamW(
-        [q_mu, L_unconstrained, q_alpha, q_log_b],
-        lr=lr,
-        weight_decay=weight_decay
-    )
+    optimizer = optim.AdamW([q_mu, L_unconstrained, q_alpha, q_log_b], lr=lr, weight_decay=weight_decay)
 
     def get_scale_tril():
         L = torch.tril(L_unconstrained)
@@ -309,7 +689,6 @@ def BBVI_student_fullcov_AdamW_best(
         return L
 
     def log_joint(beta, tau2):
-        # Student-t log-likelihood
         resid = y_t - X_t @ beta
         tau = torch.sqrt(tau2)
         const = (
@@ -320,59 +699,50 @@ def BBVI_student_fullcov_AdamW_best(
         log_lik = n * (const + torch.log(tau)) - ((nu_t + 1) / 2) * torch.sum(
             torch.log1p((tau2 * resid**2) / nu_t)
         )
-
-        # β-prior
         quad = beta @ (Sigma_inv @ beta)
         log_p_b = (p / 2) * torch.log(tau2) - 0.5 * tau2 * quad
-
-        # τ²-prior
         log_p_t = (a0 - 1) * torch.log(tau2) - b0 * tau2
-
         return log_lik + log_p_b + log_p_t
 
-    # 3) BBVI with patience tracking
     best_elbo = -float("inf")
     no_improve = 0
     elbo_hist = []
 
     best_q_mu = None
+    best_L = None
     best_alpha = None
     best_rate = None
 
     for it in range(num_iters):
         optimizer.zero_grad()
 
-        # Sample β ~ q(β)
         L = get_scale_tril()
         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
         beta_samp = q_beta.rsample()
 
-        # Sample τ² ~ q(τ²)
-        alpha = torch.nn.functional.softplus(q_alpha)
-        rate = torch.nn.functional.softplus(q_log_b)
-        q_tau2 = Gamma(concentration=alpha, rate=rate)
+        alpha_v = torch.nn.functional.softplus(q_alpha)
+        rate_v = torch.nn.functional.softplus(q_log_b)
+        q_tau2 = Gamma(concentration=alpha_v, rate=rate_v)
         tau2_samp = q_tau2.rsample()
 
-        # ELBO estimate
         logp = log_joint(beta_samp, tau2_samp)
         logq_b = q_beta.log_prob(beta_samp)
         logq_t = q_tau2.log_prob(tau2_samp)
         elbo = logp - (logq_b + logq_t)
 
-        # Gradient step
         (-elbo).backward()
         optimizer.step()
 
-        elbo_val = elbo.item()
-        elbo_hist.append(elbo_val)
+        val = float(elbo.item())
+        elbo_hist.append(val)
 
-        # Patience and best tracking
-        if elbo_val > best_elbo + tol:
-            best_elbo = elbo_val
+        if val > best_elbo + tol:
+            best_elbo = val
             no_improve = 0
             best_q_mu = q_mu.detach().clone()
-            best_alpha = alpha.detach().clone()
-            best_rate = rate.detach().clone()
+            best_L = get_scale_tril().detach().clone()
+            best_alpha = alpha_v.detach().clone()
+            best_rate = rate_v.detach().clone()
         else:
             no_improve += 1
 
@@ -381,127 +751,274 @@ def BBVI_student_fullcov_AdamW_best(
                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
             break
 
-    # Return parameters at best ELBO
-    beta_mean = best_q_mu.cpu().numpy()
-    tau2_mean = (best_alpha / best_rate).item()
-
     return {
-        'beta_mean': beta_mean,
-        'tau2_mean': tau2_mean,
-        'elbo_hist': elbo_hist
+        "beta_mean": best_q_mu.cpu().numpy(),
+        "tau2_mean": (best_alpha / best_rate).item(),
+        "q_mu": best_q_mu.cpu().numpy(),
+        "q_L": best_L.cpu().numpy(),
+        "q_cov": (best_L @ best_L.T).cpu().numpy(),
+        "q_alpha_shape": float(best_alpha.item()),
+        "q_tau_rate": float(best_rate.item()),
+        "elbo_hist": elbo_hist,
+        "best_elbo": best_elbo,
     }
 
-def BBVI_student_patience_best(
-    X: np.ndarray,
-    y: np.ndarray,
-    nu: float,
-    a0: float = 0.05,
-    b0: float = 0.05,
-    num_iters: int = 20000,
-    lr: float = 1e-3,
-    tol: float = 1e-8,
-    patience: int = 1000,
-    weight_decay: float = 1e-2,
-    verbose: bool = True
-):
-    """
-    Under the Student's-t SSG likelihood and the Normal-Gamma variational family, 
-    'BBVI_student_patience_best()' performs a vanilla BBVI algorithm with a 
-    diagonal covariance structure for the variational family of beta. The 
-    convergence of the algorithm is monitored by using the change in ELBO over 
-    a 'tol' for 'patience' number of steps. Returns the BBVI estimates corresponding 
-    to the best ELBO value and performs the optimization using AdamW.
-    """
-    n, p = X.shape
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Data on device
-    X_t = torch.from_numpy(X).float().to(device)
-    y_t = torch.from_numpy(y).float().to(device)
-    nu_t = torch.tensor(nu, dtype=torch.float32, device=device)
+# def BBVI_student_fullcov_AdamW_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     nu: float,
+#     Sigma_prior: np.ndarray,
+#     a0: float,
+#     b0: float,
+#     num_iters: int = 20000,
+#     lr: float = 1e-3,
+#     tol: float = 1e-8,
+#     patience: int = 1000,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     Under the Student's-t SSG likelihood and the Normal-Gamma variational family, 
+#     'BBVI_student_fullcov_AdamW_best()' performs the BBVI algorithm with a full 
+#     covariance structure for the variational family of beta. The convergence of 
+#     the algorithm is monitored by using the change in ELBO over a 'tol' for 
+#     'patience' number of steps. Returns the BBVI estimates corresponding to the 
+#     best ELBO value and performs the optimization using AdamW.
+#     """
+#     n, p = X.shape
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # OLS init for q_mu
-    q_mu = nn.Parameter(torch.zeros(p, device=device))
-    with torch.no_grad():
-        XtX = X_t.T @ X_t + 1e-6 * torch.eye(p, device=device)
-        Xty = X_t.T @ y_t
-        q_mu.copy_(torch.linalg.solve(XtX, Xty))
+#     # Move data & prior
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+#     nu_t = torch.tensor(nu, dtype=torch.float32, device=device)
+#     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
+#     Sigma_inv = torch.inverse(Sigma_t)
 
-    # Variational std-log init
-    q_log_s = nn.Parameter(torch.zeros(p, device=device))
-    # Gamma variational params init
-    q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
-    q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+#     # 1) Variational parameters
+#     # 1.1) q_mu init at OLS
+#     q_mu = nn.Parameter(torch.zeros(p, device=device))
+#     with torch.no_grad():
+#         XtX = X_t.T @ X_t
+#         Xty = X_t.T @ y_t
+#         q_mu.copy_(torch.linalg.solve(XtX, Xty))
 
-    # AdamW optimizer on all params
-    optimizer = optim.AdamW(
-        [q_mu, q_log_s, q_alpha, q_log_b],
-        lr=lr,
-        weight_decay=weight_decay
-    )
+#     # 1.2) identity init for full-cov
+#     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
 
-    def log_joint(beta, tau2):
-        resid = y_t - X_t @ beta
-        tau = torch.sqrt(tau2)
-        const = (
-            torch.lgamma((nu_t + 1) / 2)
-            - torch.lgamma(nu_t / 2)
-            - 0.5 * torch.log(nu_t * torch.tensor(np.pi, device=device))
-        )
-        log_lik = n * (const + torch.log(tau)) \
-                  - ((nu_t + 1) / 2) * torch.sum(torch.log1p((tau2 * resid**2) / nu_t))
-        # β prior
-        quad = beta @ beta
-        log_p_b = (p/2) * torch.log(tau2) - 0.5 * tau2 * quad
-        # τ² prior
-        log_p_t = (a0 - 1) * torch.log(tau2) - b0 * tau2
-        return log_lik + log_p_b + log_p_t
+#     # 1.3) precision variational
+#     q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
+#     q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
 
-    best_elbo = -float("inf")
-    no_improve = 0
-    elbo_hist = []
+#     # 2) AdamW optimizer on all params
+#     optimizer = optim.AdamW(
+#         [q_mu, L_unconstrained, q_alpha, q_log_b],
+#         lr=lr,
+#         weight_decay=weight_decay
+#     )
 
-    best_mu = None
-    best_alpha = None
-    best_rate = None
+#     def get_scale_tril():
+#         L = torch.tril(L_unconstrained)
+#         diag = torch.diagonal(L, 0)
+#         L = L.clone()
+#         L[range(p), range(p)] = torch.exp(diag)
+#         return L
 
-    for it in range(num_iters):
-        optimizer.zero_grad()
-        # sample β
-        eps = torch.randn(p, device=device)
-        s = torch.exp(q_log_s)
-        beta_s = q_mu + s * eps
-        # sample τ²
-        alpha = torch.nn.functional.softplus(q_alpha)
-        rate = torch.nn.functional.softplus(q_log_b)
-        q_tau2 = Gamma(concentration=alpha, rate=rate)
-        tau2_s = q_tau2.rsample()
-        # ELBO
-        logp = log_joint(beta_s, tau2_s)
-        logq_beta = Normal(q_mu, s).log_prob(beta_s).sum()
-        logq_tau = q_tau2.log_prob(tau2_s)
-        elbo = logp - (logq_beta + logq_tau)
-        (-elbo).backward()
-        optimizer.step()
+#     def log_joint(beta, tau2):
+#         # Student-t log-likelihood
+#         resid = y_t - X_t @ beta
+#         tau = torch.sqrt(tau2)
+#         const = (
+#             torch.lgamma((nu_t + 1) / 2) -
+#             torch.lgamma(nu_t / 2) -
+#             0.5 * torch.log(nu_t * torch.tensor(np.pi, device=device))
+#         )
+#         log_lik = n * (const + torch.log(tau)) - ((nu_t + 1) / 2) * torch.sum(
+#             torch.log1p((tau2 * resid**2) / nu_t)
+#         )
 
-        val = elbo.item()
-        elbo_hist.append(val)
-        if val > best_elbo + tol:
-            best_elbo = val
-            no_improve = 0
-            best_mu = q_mu.detach().clone()
-            best_alpha = alpha.detach().clone()
-            best_rate = rate.detach().clone()
-        else:
-            no_improve += 1
-        if no_improve >= patience:
-            if verbose:
-                print(f"Early stopping at iter {it}: no ELBO gain ≥{tol} for {patience} iters.")
-            break
+#         # β-prior
+#         quad = beta @ (Sigma_inv @ beta)
+#         log_p_b = (p / 2) * torch.log(tau2) - 0.5 * tau2 * quad
 
-    beta_mean = best_mu.cpu().numpy()
-    tau2_mean = (best_alpha / best_rate).item()
-    return {'beta_mean': beta_mean, 'tau2_mean': tau2_mean, 'elbo_hist': elbo_hist}
+#         # τ²-prior
+#         log_p_t = (a0 - 1) * torch.log(tau2) - b0 * tau2
+
+#         return log_lik + log_p_b + log_p_t
+
+#     # 3) BBVI with patience tracking
+#     best_elbo = -float("inf")
+#     no_improve = 0
+#     elbo_hist = []
+
+#     best_q_mu = None
+#     best_alpha = None
+#     best_rate = None
+
+#     for it in range(num_iters):
+#         optimizer.zero_grad()
+
+#         # Sample β ~ q(β)
+#         L = get_scale_tril()
+#         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
+#         beta_samp = q_beta.rsample()
+
+#         # Sample τ² ~ q(τ²)
+#         alpha = torch.nn.functional.softplus(q_alpha)
+#         rate = torch.nn.functional.softplus(q_log_b)
+#         q_tau2 = Gamma(concentration=alpha, rate=rate)
+#         tau2_samp = q_tau2.rsample()
+
+#         # ELBO estimate
+#         logp = log_joint(beta_samp, tau2_samp)
+#         logq_b = q_beta.log_prob(beta_samp)
+#         logq_t = q_tau2.log_prob(tau2_samp)
+#         elbo = logp - (logq_b + logq_t)
+
+#         # Gradient step
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         elbo_val = elbo.item()
+#         elbo_hist.append(elbo_val)
+
+#         # Patience and best tracking
+#         if elbo_val > best_elbo + tol:
+#             best_elbo = elbo_val
+#             no_improve = 0
+#             best_q_mu = q_mu.detach().clone()
+#             best_alpha = alpha.detach().clone()
+#             best_rate = rate.detach().clone()
+#         else:
+#             no_improve += 1
+
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+#             break
+
+#     # Return parameters at best ELBO
+#     beta_mean = best_q_mu.cpu().numpy()
+#     tau2_mean = (best_alpha / best_rate).item()
+
+#     return {
+#         'beta_mean': beta_mean,
+#         'tau2_mean': tau2_mean,
+#         'elbo_hist': elbo_hist
+#     }
+
+# def BBVI_student_patience_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     nu: float,
+#     a0: float = 0.05,
+#     b0: float = 0.05,
+#     num_iters: int = 20000,
+#     lr: float = 1e-3,
+#     tol: float = 1e-8,
+#     patience: int = 1000,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     Under the Student's-t SSG likelihood and the Normal-Gamma variational family, 
+#     'BBVI_student_patience_best()' performs a vanilla BBVI algorithm with a 
+#     diagonal covariance structure for the variational family of beta. The 
+#     convergence of the algorithm is monitored by using the change in ELBO over 
+#     a 'tol' for 'patience' number of steps. Returns the BBVI estimates corresponding 
+#     to the best ELBO value and performs the optimization using AdamW.
+#     """
+#     n, p = X.shape
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#     # Data on device
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+#     nu_t = torch.tensor(nu, dtype=torch.float32, device=device)
+
+#     # OLS init for q_mu
+#     q_mu = nn.Parameter(torch.zeros(p, device=device))
+#     with torch.no_grad():
+#         XtX = X_t.T @ X_t + 1e-6 * torch.eye(p, device=device)
+#         Xty = X_t.T @ y_t
+#         q_mu.copy_(torch.linalg.solve(XtX, Xty))
+
+#     # Variational std-log init
+#     q_log_s = nn.Parameter(torch.zeros(p, device=device))
+#     # Gamma variational params init
+#     q_alpha = nn.Parameter(torch.tensor(0.0, device=device))
+#     q_log_b = nn.Parameter(torch.tensor(0.0, device=device))
+
+#     # AdamW optimizer on all params
+#     optimizer = optim.AdamW(
+#         [q_mu, q_log_s, q_alpha, q_log_b],
+#         lr=lr,
+#         weight_decay=weight_decay
+#     )
+
+#     def log_joint(beta, tau2):
+#         resid = y_t - X_t @ beta
+#         tau = torch.sqrt(tau2)
+#         const = (
+#             torch.lgamma((nu_t + 1) / 2)
+#             - torch.lgamma(nu_t / 2)
+#             - 0.5 * torch.log(nu_t * torch.tensor(np.pi, device=device))
+#         )
+#         log_lik = n * (const + torch.log(tau)) \
+#                   - ((nu_t + 1) / 2) * torch.sum(torch.log1p((tau2 * resid**2) / nu_t))
+#         # β prior
+#         quad = beta @ beta
+#         log_p_b = (p/2) * torch.log(tau2) - 0.5 * tau2 * quad
+#         # τ² prior
+#         log_p_t = (a0 - 1) * torch.log(tau2) - b0 * tau2
+#         return log_lik + log_p_b + log_p_t
+
+#     best_elbo = -float("inf")
+#     no_improve = 0
+#     elbo_hist = []
+
+#     best_mu = None
+#     best_alpha = None
+#     best_rate = None
+
+#     for it in range(num_iters):
+#         optimizer.zero_grad()
+#         # sample β
+#         eps = torch.randn(p, device=device)
+#         s = torch.exp(q_log_s)
+#         beta_s = q_mu + s * eps
+#         # sample τ²
+#         alpha = torch.nn.functional.softplus(q_alpha)
+#         rate = torch.nn.functional.softplus(q_log_b)
+#         q_tau2 = Gamma(concentration=alpha, rate=rate)
+#         tau2_s = q_tau2.rsample()
+#         # ELBO
+#         logp = log_joint(beta_s, tau2_s)
+#         logq_beta = Normal(q_mu, s).log_prob(beta_s).sum()
+#         logq_tau = q_tau2.log_prob(tau2_s)
+#         elbo = logp - (logq_beta + logq_tau)
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         val = elbo.item()
+#         elbo_hist.append(val)
+#         if val > best_elbo + tol:
+#             best_elbo = val
+#             no_improve = 0
+#             best_mu = q_mu.detach().clone()
+#             best_alpha = alpha.detach().clone()
+#             best_rate = rate.detach().clone()
+#         else:
+#             no_improve += 1
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥{tol} for {patience} iters.")
+#             break
+
+#     beta_mean = best_mu.cpu().numpy()
+#     tau2_mean = (best_alpha / best_rate).item()
+#     return {'beta_mean': beta_mean, 'tau2_mean': tau2_mean, 'elbo_hist': elbo_hist}
 
 def BBVI_Logistic_fullcov_AdamW_best(
     X: np.ndarray,
@@ -686,6 +1203,9 @@ def BBVI_Logistic_patience_best(
     beta_mean = best_mu.cpu().numpy()
     return {'beta_mean': beta_mean, 'elbo_hist': elbo_hist}
 
+# ============================================================
+# ADVI (FR): Negative-Binomial -- adapted to return q_mu, q_L
+# ============================================================
 def BBVI_NegBin_fullcov_AdamW_best(
     X: np.ndarray,
     y: np.ndarray,
@@ -698,15 +1218,9 @@ def BBVI_NegBin_fullcov_AdamW_best(
     weight_decay: float = 1e-2,
     verbose: bool = True
 ):
-    """
-    BBVI for NB regression with prior β~N(0,Σ_prior),
-    full-cov q(β)=MVN(q_mu, L L^T), AdamW, OLS-log-link init,
-    and early stopping on ELBO plateau, returning best-ELBO β.
-    """
     n, p = X.shape
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Move data + prior
     X_t = torch.from_numpy(X).float().to(device)
     y_t = torch.from_numpy(y).float().to(device)
     r_t = torch.tensor(r, dtype=torch.float32, device=device) if not isinstance(r, np.ndarray) \
@@ -714,19 +1228,15 @@ def BBVI_NegBin_fullcov_AdamW_best(
     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
     Sigma_inv = torch.inverse(Sigma_t)
 
-    # 1) q_mu init via approximate log-link regression
     y_offset = (y + 1e-6) / (r + 1e-6)
     log_y = np.log(y_offset)
     try:
-        beta_init = solve(X.T @ X, X.T @ log_y)
+        beta_init = np.linalg.solve(X.T @ X, X.T @ log_y)
     except np.linalg.LinAlgError:
         beta_init = np.zeros(p)
+
     q_mu = nn.Parameter(torch.from_numpy(beta_init).float().to(device))
-
-    # 2) Covariance init: unconstrained lower-triangular zeros → identity
     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
-
-    # 3) AdamW on both q_mu and L_unconstrained
     optimizer = optim.AdamW([q_mu, L_unconstrained], lr=lr, weight_decay=weight_decay)
 
     def get_scale_tril():
@@ -734,13 +1244,11 @@ def BBVI_NegBin_fullcov_AdamW_best(
         diag = torch.diagonal(L, 0)
         L = L.clone()
         L[range(p), range(p)] = torch.exp(diag)
-        return L  # now L @ L.T is the covariance
+        return L
 
     def log_joint(beta):
         Xbeta = X_t @ beta
-        # NB log-likelihood (canonical)
         log_lik = (r_t * Xbeta).sum() - ((r_t + y_t) * torch.log1p(torch.exp(Xbeta))).sum()
-        # Gaussian prior log-density
         quad = beta @ (Sigma_inv @ beta)
         log_prior = -0.5 * quad
         return log_lik + log_prior
@@ -749,16 +1257,15 @@ def BBVI_NegBin_fullcov_AdamW_best(
     no_improve = 0
     elbo_hist = []
     best_mu = None
+    best_L = None
 
     for it in range(num_iters):
         optimizer.zero_grad()
 
-        # Sample β ~ q(β)
         L = get_scale_tril()
         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
         beta_samp = q_beta.rsample()
 
-        # ELBO estimate
         logp = log_joint(beta_samp)
         logq = q_beta.log_prob(beta_samp)
         elbo = logp - logq
@@ -766,14 +1273,14 @@ def BBVI_NegBin_fullcov_AdamW_best(
         (-elbo).backward()
         optimizer.step()
 
-        val = elbo.item()
+        val = float(elbo.item())
         elbo_hist.append(val)
 
-        # Track best ELBO
         if val > best_elbo + tol:
             best_elbo = val
             no_improve = 0
             best_mu = q_mu.detach().clone()
+            best_L = get_scale_tril().detach().clone()
         else:
             no_improve += 1
 
@@ -782,12 +1289,122 @@ def BBVI_NegBin_fullcov_AdamW_best(
                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
             break
 
-    beta_mean = best_mu.cpu().numpy()
     return {
-        'beta_mean': beta_mean,
-        'elbo_hist': elbo_hist
+        "beta_mean": best_mu.cpu().numpy(),
+        "q_mu": best_mu.cpu().numpy(),
+        "q_L": best_L.cpu().numpy(),
+        "q_cov": (best_L @ best_L.T).cpu().numpy(),
+        "elbo_hist": elbo_hist,
+        "best_elbo": best_elbo,
     }
 
+
+
+# def BBVI_NegBin_fullcov_AdamW_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     r,
+#     Sigma_prior: np.ndarray,
+#     num_iters: int = 20000,
+#     lr: float = 1e-3,
+#     tol: float = 1e-8,
+#     patience: int = 1000,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     BBVI for NB regression with prior β~N(0,Σ_prior),
+#     full-cov q(β)=MVN(q_mu, L L^T), AdamW, OLS-log-link init,
+#     and early stopping on ELBO plateau, returning best-ELBO β.
+#     """
+#     n, p = X.shape
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#     # Move data + prior
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+#     r_t = torch.tensor(r, dtype=torch.float32, device=device) if not isinstance(r, np.ndarray) \
+#           else torch.from_numpy(r).float().to(device)
+#     Sigma_t = torch.from_numpy(Sigma_prior).float().to(device)
+#     Sigma_inv = torch.inverse(Sigma_t)
+
+#     # 1) q_mu init via approximate log-link regression
+#     y_offset = (y + 1e-6) / (r + 1e-6)
+#     log_y = np.log(y_offset)
+#     try:
+#         beta_init = solve(X.T @ X, X.T @ log_y)
+#     except np.linalg.LinAlgError:
+#         beta_init = np.zeros(p)
+#     q_mu = nn.Parameter(torch.from_numpy(beta_init).float().to(device))
+
+#     # 2) Covariance init: unconstrained lower-triangular zeros → identity
+#     L_unconstrained = nn.Parameter(torch.zeros((p, p), device=device))
+
+#     # 3) AdamW on both q_mu and L_unconstrained
+#     optimizer = optim.AdamW([q_mu, L_unconstrained], lr=lr, weight_decay=weight_decay)
+
+#     def get_scale_tril():
+#         L = torch.tril(L_unconstrained)
+#         diag = torch.diagonal(L, 0)
+#         L = L.clone()
+#         L[range(p), range(p)] = torch.exp(diag)
+#         return L  # now L @ L.T is the covariance
+
+#     def log_joint(beta):
+#         Xbeta = X_t @ beta
+#         # NB log-likelihood (canonical)
+#         log_lik = (r_t * Xbeta).sum() - ((r_t + y_t) * torch.log1p(torch.exp(Xbeta))).sum()
+#         # Gaussian prior log-density
+#         quad = beta @ (Sigma_inv @ beta)
+#         log_prior = -0.5 * quad
+#         return log_lik + log_prior
+
+#     best_elbo = -float('inf')
+#     no_improve = 0
+#     elbo_hist = []
+#     best_mu = None
+
+#     for it in range(num_iters):
+#         optimizer.zero_grad()
+
+#         # Sample β ~ q(β)
+#         L = get_scale_tril()
+#         q_beta = MultivariateNormal(loc=q_mu, scale_tril=L)
+#         beta_samp = q_beta.rsample()
+
+#         # ELBO estimate
+#         logp = log_joint(beta_samp)
+#         logq = q_beta.log_prob(beta_samp)
+#         elbo = logp - logq
+
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         val = elbo.item()
+#         elbo_hist.append(val)
+
+#         # Track best ELBO
+#         if val > best_elbo + tol:
+#             best_elbo = val
+#             no_improve = 0
+#             best_mu = q_mu.detach().clone()
+#         else:
+#             no_improve += 1
+
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+#             break
+
+#     beta_mean = best_mu.cpu().numpy()
+#     return {
+#         'beta_mean': beta_mean,
+#         'elbo_hist': elbo_hist
+#     }
+
+# ============================================================
+# ADVI (MF): Negative-Binomial -- adapted to return q_mu, q_sd
+# ============================================================
 def BBVI_NegBin_patience_best(
     X: np.ndarray,
     y: np.ndarray,
@@ -799,43 +1416,29 @@ def BBVI_NegBin_patience_best(
     weight_decay: float = 1e-2,
     verbose: bool = True
 ):
-    """
-    BBVI for negative-binomial regression with prior β~N(0,I),
-    diagonal q(β), AdamW optimizer, MLE-style init, best-ELBO tracking.
-    """
     n, p = X.shape
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Data to device
     X_t = torch.from_numpy(X).float().to(device)
     y_t = torch.from_numpy(y).float().to(device)
-    # Convert r
-    if isinstance(r, np.ndarray):
-        r_t = torch.from_numpy(r).float().to(device)
-    else:
-        r_t = torch.tensor(r, dtype=torch.float32, device=device)
+    r_t = torch.tensor(r, dtype=torch.float32, device=device) if not isinstance(r, np.ndarray) \
+          else torch.from_numpy(r).float().to(device)
 
-    # Initialization for q_mu via approximate log-link regression
-    # Avoid zeros: add small constant
     y_offset = (y + 1e-6) / (r + 1e-6)
     log_y = np.log(y_offset)
-    # Solve (X^T X) β = X^T log_y
     try:
-        beta_init = solve(X.T @ X, X.T @ log_y)
+        beta_init = np.linalg.solve(X.T @ X, X.T @ log_y)
     except np.linalg.LinAlgError:
         beta_init = np.zeros(p)
-    q_mu = nn.Parameter(torch.from_numpy(beta_init).float().to(device))
 
-    # Variational log-std parameters
+    q_mu = nn.Parameter(torch.from_numpy(beta_init).float().to(device))
     q_log_s = nn.Parameter(torch.zeros(p, device=device))
 
-    # AdamW optimizer
     optimizer = optim.AdamW([q_mu, q_log_s], lr=lr, weight_decay=weight_decay)
 
     def log_joint(beta):
         Xbeta = X_t @ beta
         log_lik = torch.sum(r_t * Xbeta) - torch.sum((r_t + y_t) * torch.log1p(torch.exp(Xbeta)))
-        # Gaussian prior
         log_p = -0.5 * (beta @ beta)
         return log_lik + log_p
 
@@ -843,35 +1446,133 @@ def BBVI_NegBin_patience_best(
     no_improve = 0
     elbo_hist = []
     best_mu = None
+    best_log_s = None
 
     for it in range(num_iters):
         optimizer.zero_grad()
-        # Sample beta
+
         eps = torch.randn(p, device=device)
         scale = torch.exp(q_log_s)
         beta_samp = q_mu + scale * eps
-        # ELBO
+
         logp = log_joint(beta_samp)
         logq = Normal(q_mu, scale).log_prob(beta_samp).sum()
         elbo = logp - logq
+
         (-elbo).backward()
         optimizer.step()
 
-        val = elbo.item()
+        val = float(elbo.item())
         elbo_hist.append(val)
+
         if val > best_elbo + tol:
             best_elbo = val
             no_improve = 0
             best_mu = q_mu.detach().clone()
+            best_log_s = q_log_s.detach().clone()
         else:
             no_improve += 1
+
         if no_improve >= patience:
             if verbose:
                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
             break
 
-    beta_mean = best_mu.cpu().numpy()
-    return {'beta_mean': beta_mean, 'elbo_hist': elbo_hist}
+    best_sd = torch.exp(best_log_s)
+
+    return {
+        "beta_mean": best_mu.cpu().numpy(),
+        "q_mu": best_mu.cpu().numpy(),
+        "q_log_s": best_log_s.cpu().numpy(),
+        "q_sd": best_sd.cpu().numpy(),
+        "elbo_hist": elbo_hist,
+        "best_elbo": best_elbo,
+    }
+    
+# def BBVI_NegBin_patience_best(
+#     X: np.ndarray,
+#     y: np.ndarray,
+#     r,
+#     num_iters: int = 10000,
+#     lr: float = 1e-3,
+#     tol: float = 1e-8,
+#     patience: int = 500,
+#     weight_decay: float = 1e-2,
+#     verbose: bool = True
+# ):
+#     """
+#     BBVI for negative-binomial regression with prior β~N(0,I),
+#     diagonal q(β), AdamW optimizer, MLE-style init, best-ELBO tracking.
+#     """
+#     n, p = X.shape
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#     # Data to device
+#     X_t = torch.from_numpy(X).float().to(device)
+#     y_t = torch.from_numpy(y).float().to(device)
+#     # Convert r
+#     if isinstance(r, np.ndarray):
+#         r_t = torch.from_numpy(r).float().to(device)
+#     else:
+#         r_t = torch.tensor(r, dtype=torch.float32, device=device)
+
+#     # Initialization for q_mu via approximate log-link regression
+#     # Avoid zeros: add small constant
+#     y_offset = (y + 1e-6) / (r + 1e-6)
+#     log_y = np.log(y_offset)
+#     # Solve (X^T X) β = X^T log_y
+#     try:
+#         beta_init = solve(X.T @ X, X.T @ log_y)
+#     except np.linalg.LinAlgError:
+#         beta_init = np.zeros(p)
+#     q_mu = nn.Parameter(torch.from_numpy(beta_init).float().to(device))
+
+#     # Variational log-std parameters
+#     q_log_s = nn.Parameter(torch.zeros(p, device=device))
+
+#     # AdamW optimizer
+#     optimizer = optim.AdamW([q_mu, q_log_s], lr=lr, weight_decay=weight_decay)
+
+#     def log_joint(beta):
+#         Xbeta = X_t @ beta
+#         log_lik = torch.sum(r_t * Xbeta) - torch.sum((r_t + y_t) * torch.log1p(torch.exp(Xbeta)))
+#         # Gaussian prior
+#         log_p = -0.5 * (beta @ beta)
+#         return log_lik + log_p
+
+#     best_elbo = -float('inf')
+#     no_improve = 0
+#     elbo_hist = []
+#     best_mu = None
+
+#     for it in range(num_iters):
+#         optimizer.zero_grad()
+#         # Sample beta
+#         eps = torch.randn(p, device=device)
+#         scale = torch.exp(q_log_s)
+#         beta_samp = q_mu + scale * eps
+#         # ELBO
+#         logp = log_joint(beta_samp)
+#         logq = Normal(q_mu, scale).log_prob(beta_samp).sum()
+#         elbo = logp - logq
+#         (-elbo).backward()
+#         optimizer.step()
+
+#         val = elbo.item()
+#         elbo_hist.append(val)
+#         if val > best_elbo + tol:
+#             best_elbo = val
+#             no_improve = 0
+#             best_mu = q_mu.detach().clone()
+#         else:
+#             no_improve += 1
+#         if no_improve >= patience:
+#             if verbose:
+#                 print(f"Early stopping at iter {it}: no ELBO gain ≥ {tol} for {patience} iters.")
+#             break
+
+#     beta_mean = best_mu.cpu().numpy()
+#     return {'beta_mean': beta_mean, 'elbo_hist': elbo_hist}
 
 # def BBVI_Laplace_fullcov_AdamW(
 #     X: np.ndarray,

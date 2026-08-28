@@ -1,13 +1,3 @@
-# =============================================================================
-# Copyright 2025. Somjit Roy and Pritam Dey. 
-# This program implements different classes for the TAVIE-SSG algorithm as developed in:
-# Roy, S., Dey, P., Pati, D., and Mallick, B.K.
-# 'A Generalized Tangent Approximation Based Variational Inference Framework for Strongly Super-Gaussian Likelihoods'.
-#
-# Authors:
-#   Somjit Roy <sroy_123@tamu.edu> and Pritam Dey <pritam.dey@tamu.edu>
-# =============================================================================
-
 # Required imports
 from .tavie import *
 import numpy as np
@@ -27,8 +17,8 @@ def validate_prior_params_loc_scale(prior_params, dim):
     where:
         - m0: prior mean vector of β,
         - V0: prior covariance matrix of β,
-        - a0: shape parameter of the inverse-gamma prior on scale (τ²),
-        - b0: rate parameter of the inverse-gamma prior on scale (τ²).
+        - a0: shape parameter of the gamma prior on scale (τ²),
+        - b0: rate parameter of the gamma prior on scale (τ²).
 
     Parameters
     ----------
@@ -388,7 +378,7 @@ class TAVIE_loc_scale:
         y : np.ndarray of shape (n,)
             Response vector.
         prior_params : list or tuple, optional
-            Prior parameters [m0, V0, a0, b0] for the Gaussian-Inverse-Gamma prior.
+            Prior parameters [m0, V0, a0, b0] for the Gaussian-Gamma prior.
             If None, defaults to m0=0, V0=I, a0=0.05, b0=0.05.
         alpha : float, default=1.0
             Data fidelity scaling factor.
@@ -513,8 +503,8 @@ class TAVIE_loc_scale:
             A dictionary containing:
             - 'm_xi': np.ndarray of shape (p,), posterior mean of β.
             - 'V_xi': np.ndarray of shape (p, p), posterior covariance of β.
-            - 'a_xi': float, shape parameter of the inverse-gamma posterior on τ².
-            - 'b_xi': float, rate parameter of the inverse-gamma posterior on τ².
+            - 'a_xi': float, shape parameter of the gamma posterior on τ².
+            - 'b_xi': float, rate parameter of the gamma posterior on τ².
         """
         return {'m_xi': self.fitted_values['m'], 'V_xi': self.fitted_values['V'],
                'a_xi': self.fitted_values['a'], 'b_xi': self.fitted_values['b']}

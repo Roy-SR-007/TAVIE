@@ -1,13 +1,3 @@
-# =============================================================================
-# Copyright 2025. Somjit Roy and Pritam Dey. 
-# This program implements the TAVIE-SSG algorithm as developed in:
-# Roy, S., Dey, P., Pati, D., and Mallick, B.K.
-# 'A Generalized Tangent Approximation Based Variational Inference Framework for Strongly Super-Gaussian Likelihoods'.
-#
-# Authors:
-#   Somjit Roy <sroy_123@tamu.edu> and Pritam Dey <pritam.dey@tamu.edu>
-# =============================================================================
-
 # Required imports
 import numpy as np
 from scipy.linalg import cho_factor, cho_solve
@@ -49,9 +39,9 @@ def TAVIE_ls(
     m0 : np.ndarray of shape (p,), optional
         Prior mean for the regression coefficients. Defaults to zero vector.
     a0 : float, optional
-        Shape parameter of the inverse-gamma prior on scale. Default is 0.05.
+        Shape parameter of the gamma prior on scale. Default is 0.05.
     b0 : float, optional
-        Rate parameter of the inverse-gamma prior on scale. Default is 0.05.
+        Rate parameter of the gamma prior on scale. Default is 0.05.
     alpha : float, optional
         Data-fidelity scaling factor in the variational objective. Default is 1.0.
     maxiter : int, optional
@@ -69,14 +59,14 @@ def TAVIE_ls(
         Dictionary containing the following keys:
         - 'm': posterior mean of beta (np.ndarray of shape (p,))
         - 'V': posterior covariance of beta (np.ndarray of shape (p, p))
-        - 'a': updated shape parameter of the inverse-gamma (float)
-        - 'b': updated rate parameter of the inverse-gamma (float)
+        - 'a': updated shape parameter of the gamma (float)
+        - 'b': updated rate parameter of the gamma (float)
         - 'elbo': list of ELBO values during iterations (only if `cfunc` is provided)
 
     Notes
     -----
     The variational family is:
-        q(β, τ²) = N(β | m, V) × Inv-Gamma(τ² | a, b)
+        q(β, τ²) = N(β | m, V/τ²) × Gamma(τ² | a/2, b/2)
 
     The Evidence Lower Bound (ELBO) has the closed-form expression:
         ELBO = 
@@ -155,9 +145,9 @@ def TAVIE_ls(
             break
 
     if cfunc is None:
-        return {'m': m_xi, 'V': V_xi, 'b': b_xi, 'a': anew}
+        return {'m': m_xi, 'V': V_xi, 'b': b_xi, 'a': anew, 'xi': xi}
     else:
-        return {'m': m_xi, 'V': V_xi, 'b': b_xi, 'a': anew, 'elbo': elbo}
+        return {'m': m_xi, 'V': V_xi, 'b': b_xi, 'a': anew, 'elbo': elbo, 'xi': xi}
 
 
 def A_func_laplace(xi: np.ndarray):
@@ -409,7 +399,7 @@ def TAVIE_qr(
             print("Warning: reached maximum iterations before convergence.")
             break
     
-    return {'m': m_xi, 'V': V_xi, 'elbo': elbo}
+    return {'m': m_xi, 'V': V_xi, 'elbo': elbo, 'xi': xi}
 
 def TAVIE_bern(
     X: np.ndarray,
@@ -518,4 +508,4 @@ def TAVIE_bern(
             print("Warning: reached maximum iterations before convergence.")
             break
     
-    return {'m': m_xi, 'V': V_xi, 'elbo': elbo}
+    return {'m': m_xi, 'V': V_xi, 'elbo': elbo, 'xi': xi}

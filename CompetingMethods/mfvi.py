@@ -18,148 +18,327 @@ from scipy.special import digamma, gammaln
 from scipy.special import expit  
 from typing import Dict
 
-# =============================================================================
-# Helper function to do MFVB for the Student's t model
-# =============================================================================
+
 def _compute_nu_moments(n, C1, nu_min, nu_max, num_grid=500):
-    """
-    Computes the zeroth and first moments (F0 and F1) of a non-normalized 
-    weight function w(ν) over a grid of ν values in [nu_min, nu_max], using 
-    a numerically stable log-domain Riemann sum approximation.
-
-    The integrals approximated are:
-        F0 = ∫ w(ν) dν,
-        F1 = ∫ ν·w(ν) dν,
-
-    where:
-        log w(ν) = n * [ (ν/2) * log(ν/2) - log Γ(ν/2) ] - (ν/2) * C1
-
-    Parameters
-    ----------
-    n : int
-        Number of observations (used to scale log-likelihood term).
-    C1 : float
-        Data-dependent constant (typically a function of the sufficient statistics).
-    nu_min : float
-        Minimum value of ν to consider in the grid.
-    nu_max : float
-        Maximum value of ν to consider in the grid.
-    num_grid : int, optional
-        Number of evenly spaced ν points in the grid (default is 500).
-
-    Returns
-    -------
-    F0 : float
-        Zeroth moment: approximated ∫ w(ν) dν
-    F1 : float
-        First moment: approximated ∫ ν·w(ν) dν
-
-    Notes
-    -----
-    - The function uses a log-domain evaluation with max-shift stabilization to 
-      prevent numerical underflow or overflow in the exponential of log weights.
-    - The returned ratio F1 / F0 is the expected value of ν under the normalized w(ν).
-
-    """
-    # 1) grid
     nus = np.linspace(nu_min, nu_max, num_grid)
-    # 2) log-weights
-    logw = n * (nus/2*np.log(nus/2) - gammaln(nus/2)) - (nus/2)*C1
-    # 3) shift to avoid underflow
+    logw = n * (nus / 2 * np.log(nus / 2) - gammaln(nus / 2)) - (nus / 2) * C1
     logw -= logw.max()
     w = np.exp(logw)
-    # 4) Riemann-step
     h = (nu_max - nu_min) / (num_grid - 1)
     F0 = w.sum() * h
     F1 = (nus * w).sum() * h
-    return F0, F1
+    return F0, F1, nus, w
 
-# =============================================================================
-# MFVB for the student's t model
-# =============================================================================
 
-def MFVI_Student(X, y,
-                      mu_beta, Sigma_beta,
-                      A, B,
-                      nu_min, nu_max,
-                      max_iter=500, tol=1e-6, nu_grid=500,
-                      verbose=True):
+def MFVI_Student(
+    X,
+    y,
+    mu_beta,
+    Sigma_beta,
+    A,
+    B,
+    nu_min=2.0,
+    nu_max=20.0,
+    max_iter=500,
+    tol=1e-6,
+    nu_grid=500,
+    fix_nu=None,
+    verbose=True
+):
     """
-    MFVB for Student-t linear regression.
-    Inputs
-    ------
-      X : (n×p) design matrix
-      y : (n,)    responses
-      mu_beta : (p,)    prior mean
-      Sigma_beta: (p×p) prior cov
-      A,B      : IG(A,B) prior on sigma^2
-      nu_min,nu_max : support for uniform prior on nu
+    MFVI for Student-t linear regression with posterior hyperparameter output.
+
+    Variational family:
+        q(beta)   = N(beta_q, V_beta_q)
+        q(sigma^2)= IG(shape_s, rate_s)
+        q(nu)     = either estimated on grid or fixed at fix_nu
+
+    If fix_nu is not None, nu is held fixed and the update for q(nu) is skipped.
+    This is the recommended option for apples-to-apples SW comparison against
+    a true posterior with fixed degrees of freedom.
+
     Returns
     -------
-      beta_hat : posterior mean of β
-      sigma2_hat : posterior mean of σ^2
-      nu_hat     : posterior mean of ν
+    dict with:
+        beta_mean
+        beta_cov
+        sigma2_mean
+        sigma2_shape
+        sigma2_rate
+        tau2_mean
+        tau2_shape
+        tau2_rate
+        nu_mean
+        a_q
+        loga_q
+        resid_mean
+        resid_var
     """
-    X = np.asarray(X)
-    y = np.asarray(y)
-    n,p = X.shape
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mu_beta = np.asarray(mu_beta, dtype=float)
+    Sigma_beta = np.asarray(Sigma_beta, dtype=float)
 
-    # Precompute precision of prior on beta
+    n, p = X.shape
     Sigma_beta_inv = np.linalg.inv(Sigma_beta)
 
-    # Initialize VB parameters
-    beta_q      = np.linalg.solve(X.T@X, X.T@y)        # OLS start
-    V_beta_q    = Sigma_beta                # start with prior
-    sigma2_inv_q = 1.0/np.var(y)            # E[1/σ²]
-    nu_q        = 0.5*(nu_min+nu_max)
-    a_q         = np.ones(n)                # E[a_i]
-    loga_q      = np.zeros(n)               # log-rate term
+    beta_q = np.linalg.solve(X.T @ X, X.T @ y)
+    V_beta_q = Sigma_beta.copy()
+    sigma2_inv_q = 1.0 / np.var(y)
 
-    # For convergence checking
-    prev = np.hstack([beta_q, [1/sigma2_inv_q, nu_q]])
+    if fix_nu is None:
+        nu_q = 0.5 * (nu_min + nu_max)
+    else:
+        nu_q = float(fix_nu)
 
-    for it in range(1, max_iter+1):
-        # 1) Update local a_i's
-        #    shape = (nu_q + 1)/2,  rate = (nu_q + E[(y-Xβ)^2]/σ²)/2
-        resid_mean = y - X@beta_q
-        # E[(y - x^T β)^2] = resid_mean^2 + diag(X Vβ X^T)
+    a_q = np.ones(n)
+    loga_q = np.zeros(n)
+
+    prev = np.hstack([beta_q, [1.0 / sigma2_inv_q, nu_q]])
+
+    last_shape_s = None
+    last_rate_s = None
+    nu_grid_vals = None
+    nu_grid_weights = None
+
+    for it in range(1, max_iter + 1):
+        # ----------------------------------------------------
+        # 1) update local latent scales a_i
+        # ----------------------------------------------------
+        resid_mean = y - X @ beta_q
         VXt = X @ V_beta_q
         resid_var = np.sum(VXt * X, axis=1)
-        shape_ai = 0.5*(nu_q + 1)
-        rate_ai  = 0.5*(nu_q + sigma2_inv_q*(resid_mean**2 + resid_var))
-        a_q      = shape_ai / rate_ai
-        loga_q   = np.log(rate_ai) - digamma(shape_ai)
 
-        # 2) Update q(β) = N(beta_q, V_beta_q)
-        W = sigma2_inv_q * a_q                  # weights for each obs.
-        XtW = X.T * W                          # p×n matrix
+        shape_ai = 0.5 * (nu_q + 1.0)
+        rate_ai = 0.5 * (nu_q + sigma2_inv_q * (resid_mean**2 + resid_var))
+        a_q = shape_ai / rate_ai
+        loga_q = np.log(rate_ai) - digamma(shape_ai)
+
+        # ----------------------------------------------------
+        # 2) update q(beta)
+        # ----------------------------------------------------
+        W = sigma2_inv_q * a_q
+        XtW = X.T * W
         V_beta_q = np.linalg.inv(Sigma_beta_inv + XtW @ X)
-        beta_q   = V_beta_q @ (Sigma_beta_inv@mu_beta + X.T@(W*y))
+        beta_q = V_beta_q @ (Sigma_beta_inv @ mu_beta + X.T @ (W * y))
 
-        # 3) Update q(ν) via grid
-        #    C1 = ∑[loga_q + a_q]   (matches scalar case)
-        C1 = np.sum(loga_q + a_q)
-        F0,F1 = _compute_nu_moments(n, C1, nu_min, nu_max, num_grid=nu_grid)
-        nu_q = F1 / F0
+        # ----------------------------------------------------
+        # 3) update q(nu) or keep fixed
+        # ----------------------------------------------------
+        if fix_nu is None:
+            C1 = np.sum(loga_q + a_q)
+            F0, F1, nu_grid_vals, nu_grid_weights = _compute_nu_moments(
+                n=n,
+                C1=C1,
+                nu_min=nu_min,
+                nu_max=nu_max,
+                num_grid=nu_grid
+            )
+            nu_q = F1 / F0
+        else:
+            nu_q = float(fix_nu)
 
-        # 4) Update q(σ²) = IG(A + n/2,  B + 0.5∑a_i E[(y−Xβ)^2])
-        shape_s   = A + 0.5*n
-        rate_s    = B + 0.5*np.sum(a_q*(resid_mean**2 + resid_var))
+        # ----------------------------------------------------
+        # 4) update q(sigma^2) = IG(shape_s, rate_s)
+        # ----------------------------------------------------
+        shape_s = A + 0.5 * n
+        rate_s = B + 0.5 * np.sum(a_q * (resid_mean**2 + resid_var))
         sigma2_inv_q = shape_s / rate_s
 
-        # 5) Check convergence (β-vector, σ², ν)
-        curr = np.hstack([beta_q, [1/sigma2_inv_q, nu_q]])
-        rel   = np.abs(curr - prev)/(np.abs(prev)+1e-12)
+        last_shape_s = shape_s
+        last_rate_s = rate_s
+
+        # ----------------------------------------------------
+        # 5) convergence
+        # ----------------------------------------------------
+        curr = np.hstack([beta_q, [1.0 / sigma2_inv_q, nu_q]])
+        rel = np.abs(curr - prev) / (np.abs(prev) + 1e-12)
+
         if np.max(rel) < tol:
-            if(verbose):
-                print(f"Converged in {it} iters.")
+            if verbose:
+                print(f"Converged in {it} iterations.")
             break
+
         prev = curr.copy()
     else:
-        print("Warning: max_iter reached without full convergence.")
+        if verbose:
+            print("Warning: max_iter reached without full convergence.")
 
-    sigma2_q = 1.0/sigma2_inv_q
-    return beta_q, sigma2_q, nu_q
+    sigma2_mean = last_rate_s / (last_shape_s - 1.0) if last_shape_s > 1 else np.inf
+
+    # If sigma^2 ~ IG(shape_s, rate_s), then tau^2 = 1/sigma^2 ~ Gamma(shape_s, rate_s)
+    tau2_shape = last_shape_s
+    tau2_rate = last_rate_s
+    tau2_mean = tau2_shape / tau2_rate
+
+    out = {
+        "beta_mean": beta_q,
+        "beta_cov": V_beta_q,
+        "sigma2_mean": sigma2_mean,
+        "sigma2_shape": last_shape_s,
+        "sigma2_rate": last_rate_s,
+        "tau2_mean": tau2_mean,
+        "tau2_shape": tau2_shape,
+        "tau2_rate": tau2_rate,
+        "nu_mean": nu_q,
+        "a_q": a_q,
+        "loga_q": loga_q,
+        "resid_mean": resid_mean,
+        "resid_var": resid_var,
+    }
+
+    if fix_nu is None and nu_grid_vals is not None:
+        h = (nu_max - nu_min) / (nu_grid - 1)
+        norm_const = np.sum(nu_grid_weights) * h
+        out["nu_grid"] = nu_grid_vals
+        out["nu_grid_weights_unnormalized"] = nu_grid_weights
+        out["nu_grid_probs"] = nu_grid_weights / (np.sum(nu_grid_weights) + 1e-16)
+        out["nu_grid_normalizing_constant"] = norm_const
+
+    return out
+
+# =============================================================================
+# Helper function to do MFVB for the Student's t model
+# =============================================================================
+# def _compute_nu_moments(n, C1, nu_min, nu_max, num_grid=500):
+#     """
+#     Computes the zeroth and first moments (F0 and F1) of a non-normalized 
+#     weight function w(ν) over a grid of ν values in [nu_min, nu_max], using 
+#     a numerically stable log-domain Riemann sum approximation.
+
+#     The integrals approximated are:
+#         F0 = ∫ w(ν) dν,
+#         F1 = ∫ ν·w(ν) dν,
+
+#     where:
+#         log w(ν) = n * [ (ν/2) * log(ν/2) - log Γ(ν/2) ] - (ν/2) * C1
+
+#     Parameters
+#     ----------
+#     n : int
+#         Number of observations (used to scale log-likelihood term).
+#     C1 : float
+#         Data-dependent constant (typically a function of the sufficient statistics).
+#     nu_min : float
+#         Minimum value of ν to consider in the grid.
+#     nu_max : float
+#         Maximum value of ν to consider in the grid.
+#     num_grid : int, optional
+#         Number of evenly spaced ν points in the grid (default is 500).
+
+#     Returns
+#     -------
+#     F0 : float
+#         Zeroth moment: approximated ∫ w(ν) dν
+#     F1 : float
+#         First moment: approximated ∫ ν·w(ν) dν
+
+#     Notes
+#     -----
+#     - The function uses a log-domain evaluation with max-shift stabilization to 
+#       prevent numerical underflow or overflow in the exponential of log weights.
+#     - The returned ratio F1 / F0 is the expected value of ν under the normalized w(ν).
+
+#     """
+#     # 1) grid
+#     nus = np.linspace(nu_min, nu_max, num_grid)
+#     # 2) log-weights
+#     logw = n * (nus/2*np.log(nus/2) - gammaln(nus/2)) - (nus/2)*C1
+#     # 3) shift to avoid underflow
+#     logw -= logw.max()
+#     w = np.exp(logw)
+#     # 4) Riemann-step
+#     h = (nu_max - nu_min) / (num_grid - 1)
+#     F0 = w.sum() * h
+#     F1 = (nus * w).sum() * h
+#     return F0, F1
+
+# # =============================================================================
+# # MFVB for the student's t model
+# # =============================================================================
+
+# def MFVI_Student(X, y,
+#                       mu_beta, Sigma_beta,
+#                       A, B,
+#                       nu_min, nu_max,
+#                       max_iter=500, tol=1e-6, nu_grid=500,
+#                       verbose=True):
+#     """
+#     MFVB for Student-t linear regression.
+#     Inputs
+#     ------
+#       X : (n×p) design matrix
+#       y : (n,)    responses
+#       mu_beta : (p,)    prior mean
+#       Sigma_beta: (p×p) prior cov
+#       A,B      : IG(A,B) prior on sigma^2
+#       nu_min,nu_max : support for uniform prior on nu
+#     Returns
+#     -------
+#       beta_hat : posterior mean of β
+#       sigma2_hat : posterior mean of σ^2
+#       nu_hat     : posterior mean of ν
+#     """
+#     X = np.asarray(X)
+#     y = np.asarray(y)
+#     n,p = X.shape
+
+#     # Precompute precision of prior on beta
+#     Sigma_beta_inv = np.linalg.inv(Sigma_beta)
+
+#     # Initialize VB parameters
+#     beta_q      = np.linalg.solve(X.T@X, X.T@y)        # OLS start
+#     V_beta_q    = Sigma_beta                # start with prior
+#     sigma2_inv_q = 1.0/np.var(y)            # E[1/σ²]
+#     nu_q        = 0.5*(nu_min+nu_max)
+#     a_q         = np.ones(n)                # E[a_i]
+#     loga_q      = np.zeros(n)               # log-rate term
+
+#     # For convergence checking
+#     prev = np.hstack([beta_q, [1/sigma2_inv_q, nu_q]])
+
+#     for it in range(1, max_iter+1):
+#         # 1) Update local a_i's
+#         #    shape = (nu_q + 1)/2,  rate = (nu_q + E[(y-Xβ)^2]/σ²)/2
+#         resid_mean = y - X@beta_q
+#         # E[(y - x^T β)^2] = resid_mean^2 + diag(X Vβ X^T)
+#         VXt = X @ V_beta_q
+#         resid_var = np.sum(VXt * X, axis=1)
+#         shape_ai = 0.5*(nu_q + 1)
+#         rate_ai  = 0.5*(nu_q + sigma2_inv_q*(resid_mean**2 + resid_var))
+#         a_q      = shape_ai / rate_ai
+#         loga_q   = np.log(rate_ai) - digamma(shape_ai)
+
+#         # 2) Update q(β) = N(beta_q, V_beta_q)
+#         W = sigma2_inv_q * a_q                  # weights for each obs.
+#         XtW = X.T * W                          # p×n matrix
+#         V_beta_q = np.linalg.inv(Sigma_beta_inv + XtW @ X)
+#         beta_q   = V_beta_q @ (Sigma_beta_inv@mu_beta + X.T@(W*y))
+
+#         # 3) Update q(ν) via grid
+#         #    C1 = ∑[loga_q + a_q]   (matches scalar case)
+#         C1 = np.sum(loga_q + a_q)
+#         F0,F1 = _compute_nu_moments(n, C1, nu_min, nu_max, num_grid=nu_grid)
+#         nu_q = F1 / F0
+
+#         # 4) Update q(σ²) = IG(A + n/2,  B + 0.5∑a_i E[(y−Xβ)^2])
+#         shape_s   = A + 0.5*n
+#         rate_s    = B + 0.5*np.sum(a_q*(resid_mean**2 + resid_var))
+#         sigma2_inv_q = shape_s / rate_s
+
+#         # 5) Check convergence (β-vector, σ², ν)
+#         curr = np.hstack([beta_q, [1/sigma2_inv_q, nu_q]])
+#         rel   = np.abs(curr - prev)/(np.abs(prev)+1e-12)
+#         if np.max(rel) < tol:
+#             if(verbose):
+#                 print(f"Converged in {it} iters.")
+#             break
+#         prev = curr.copy()
+#     else:
+#         print("Warning: max_iter reached without full convergence.")
+
+#     sigma2_q = 1.0/sigma2_inv_q
+#     return beta_q, sigma2_q, nu_q
 
 # =============================================================================
 # MFVB for the logistic regression model
