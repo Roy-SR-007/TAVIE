@@ -64,7 +64,6 @@ jax == 0.7.0
 jaxlib == 0.7.0
 pymc == 5.25.1
 pytensor == 2.31.7
-rdata == 0.11.2
 seaborn == 0.13.2
 statsmodels == 0.14.4
 xarray == 2025.4.0
@@ -337,7 +336,7 @@ To reproduce the main functionality and examples:
 pip install numpy pandas scipy matplotlib scikit-learn ipython rich tqdm
 
 # 2. Install additional dependencies for full simulations and competing methods
-pip install seaborn pymc pytensor arviz jax jaxlib rdata statsmodels xarray
+pip install seaborn pymc pytensor arviz jax jaxlib statsmodels xarray
 
 # 3. Install DADVI separately following its official instructions
 # https://github.com/martiningram/dadvi
