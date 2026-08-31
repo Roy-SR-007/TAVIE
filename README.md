@@ -65,7 +65,7 @@
 **T**angent **A**pproximation based **V**ariational **I**nferenc**E** for **S**trongly
 **S**uper-**G**aussian likelihoods (**TAVIE-SSG**) builds a variational posterior from
 tangent minorizers of the likelihood, giving closed-form coordinate updates and a
-monotone ELBO for a broad class of heavy-tailed and count-response models.
+monotone ELBO for a broad class of heavy-tailed and discrete/count-response models.
 
 <p align="center">
   <img src="assets/tangent_bounds.gif" alt="Tangent bound animation" width="600"/>
@@ -78,7 +78,7 @@ monotone ELBO for a broad class of heavy-tailed and count-response models.
 | Model class | Description | Examples | TAVIE class |
 |:--|:--|:--|:--|
 | **Type I SSG** | Linear regression with heavy-tailed location-scale errors | Laplace, Student's-t, general scale mixtures of Gaussians | `TAVIE_loc_scale` |
-| **Type II SSG** | Count-response generalized linear models | Binomial/Bernoulli logistic, Negative-Binomial | `TAVIE_type_II` |
+| **Type II SSG** | Discrete/Count-response generalized linear models | Binomial/Bernoulli logistic, Negative-Binomial | `TAVIE_type_II` |
 | **Bayesian quantile regression** | Type I SSG under the asymmetric Laplace likelihood | Quantile regression at any level τ | `TAVIE_QR` |
 
 ---
@@ -337,7 +337,7 @@ is modular across likelihood families, prior structures, and modeling tasks.
 | Class | Target SSG model | Supported likelihoods | Prior |
 |:--|:--|:--|:--|
 | `TAVIE_loc_scale` | Heavy-tailed location–scale regression (Type I) | Laplace, Student's-t, custom location–scale | Gaussian $\times$ Gamma |
-| `TAVIE_type_II` | Count-response GLMs (Type II) | Binomial, Negative-Binomial | Gaussian |
+| `TAVIE_type_II` | Discrete/Count-response GLMs (Type II) | Binomial (includes Logistic), Negative-Binomial | Gaussian |
 | `TAVIE_QR` | Bayesian quantile regression | Asymmetric Laplace | Gaussian |
 
 ### 5.2 Importing and initializing
